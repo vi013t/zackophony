@@ -95,7 +95,7 @@ impl AudioPlayer {
 		};
 
 		cable_sink.mixer().add(mic_source.clone());
-		monitor_sink.mixer().add(mic_source);
+		// monitor_sink.mixer().add(mic_source);
 
 		Ok(AudioPlayer {
 			ui_sounds: HashMap::from([(UiSound::Hover, UiSound::Hover.buffered()?)]),
@@ -110,7 +110,6 @@ impl AudioPlayer {
 
 	fn add_to_outputs(&self, source: impl Source<Item = f32> + Clone + Send + 'static) {
 		self.cable_sink.mixer().add(source.clone());
-
 		self.monitor_sink.mixer().add(source);
 	}
 
@@ -133,8 +132,8 @@ impl AudioPlayer {
 
 	fn start_microphone(level: Arc<Mutex<f32>>) -> anyhow::Result<(Stream, Arc<Mutex<ringbuf::HeapCons<f32>>>)> {
 		let host = rodio::cpal::default_host();
-		let device = host.default_input_device().ok_or_else(|| anyhow::anyhow!("No microphone"))?;
-		let config = device.default_input_config()?;
+		let microphone = host.default_input_device().ok_or_else(|| anyhow::anyhow!("No microphone"))?;
+		let config = microphone.default_input_config()?;
 
 		println!("Mic: {} Hz, {:?}", config.sample_rate(), config.sample_format());
 
@@ -145,9 +144,9 @@ impl AudioPlayer {
 		let consumer = Arc::new(Mutex::new(consumer));
 
 		let stream = match config.sample_format() {
-			rodio::cpal::SampleFormat::F32 => Self::build_mic_stream::<f32>(&device, &config.into(), level, producer)?,
-			rodio::cpal::SampleFormat::I16 => Self::build_mic_stream::<i16>(&device, &config.into(), level, producer)?,
-			rodio::cpal::SampleFormat::U16 => Self::build_mic_stream::<u16>(&device, &config.into(), level, producer)?,
+			rodio::cpal::SampleFormat::F32 => Self::build_mic_stream::<f32>(&microphone, &config.into(), level, producer)?,
+			rodio::cpal::SampleFormat::I16 => Self::build_mic_stream::<i16>(&microphone, &config.into(), level, producer)?,
+			rodio::cpal::SampleFormat::U16 => Self::build_mic_stream::<u16>(&microphone, &config.into(), level, producer)?,
 			_ => anyhow::bail!("Unsupported mic format"),
 		};
 
@@ -156,12 +155,12 @@ impl AudioPlayer {
 		Ok((stream, consumer))
 	}
 
-	fn build_mic_stream<T>(device: &rodio::cpal::Device, config: &rodio::cpal::StreamConfig, level: Arc<Mutex<f32>>, producer: MicProducer) -> anyhow::Result<Stream>
+	fn build_mic_stream<T>(microphone: &rodio::cpal::Device, config: &rodio::cpal::StreamConfig, level: Arc<Mutex<f32>>, producer: MicProducer) -> anyhow::Result<Stream>
 	where
 		T: rodio::cpal::SizedSample,
 		f32: rodio::cpal::FromSample<T>,
 	{
-		Ok(device.build_input_stream(
+		Ok(microphone.build_input_stream(
 			config,
 			move |data: &[T], _| {
 				let mut sum = 0.0;
@@ -205,9 +204,7 @@ impl Iterator for MicSource {
 			Some(self.last_sample)
 		} else {
 			self.left = true;
-
 			let sample = self.consumer.lock().unwrap().try_pop().unwrap_or(0.0);
-
 			self.last_sample = sample;
 
 			Some(sample)
