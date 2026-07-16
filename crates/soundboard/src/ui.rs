@@ -46,6 +46,7 @@ pub struct App {
 	hotkeys: Arc<Mutex<HashMap<HotKey, HotkeyAction>>>,
 
 	selected_index: Option<(usize, usize)>,
+	active_folder: Option<usize>,
 	last_index: Option<(usize, usize)>,
 	right_clicked_index: Option<usize>,
 	page: usize,
@@ -78,6 +79,7 @@ impl App {
 			visible: false,
 			last_index: None,
 			selected_index: None,
+			active_folder: None,
 			right_clicked_index: None,
 			page: 0,
 		})
@@ -150,6 +152,52 @@ impl App {
 		Ok(())
 	}
 
+	// --- Hit Detection Helpers ---
+
+	/// Standard Ray-Casting algorithm for Point-in-Polygon collision detection.
+	fn point_in_polygon(pos: Pos2, polygon: &[Pos2]) -> bool {
+		let mut inside = false;
+		let mut j = polygon.len() - 1;
+		for i in 0..polygon.len() {
+			let pi = polygon[i];
+			let pj = polygon[j];
+			if (pi.y > pos.y) != (pj.y > pos.y) && pos.x < (pj.x - pi.x) * (pos.y - pi.y) / (pj.y - pi.y) + pi.x {
+				inside = !inside;
+			}
+			j = i;
+		}
+		inside
+	}
+
+	/// generates the geometric bounds of a wedge. used for both hit testing and drawing.
+	fn get_wedge_polygon(screen_center: Pos2, inner_radius: f32, outer_radius: f32, button_spacing: f32, slice_angle: f32, angle: f32) -> Vec<Pos2> {
+		let outer_gap_angle = button_spacing / outer_radius.max(1.0);
+		let inner_gap_angle = button_spacing / inner_radius.max(1.0);
+
+		let start_angle_outer = angle - (slice_angle / 2.0) + outer_gap_angle;
+		let end_angle_outer = angle + (slice_angle / 2.0) - outer_gap_angle;
+
+		let start_angle_inner = angle - (slice_angle / 2.0) + inner_gap_angle;
+		let end_angle_inner = angle + (slice_angle / 2.0) - inner_gap_angle;
+
+		let mut points = Vec::new();
+		let num_arc_points = 16;
+
+		for step in 0..=num_arc_points {
+			let t = step as f32 / num_arc_points as f32;
+			let a = start_angle_outer + (end_angle_outer - start_angle_outer) * t;
+			points.push(screen_center + Vec2::new(a.cos(), a.sin()) * outer_radius);
+		}
+
+		for step in (0..=num_arc_points).rev() {
+			let t = step as f32 / num_arc_points as f32;
+			let a = start_angle_inner + (end_angle_inner - start_angle_inner) * t;
+			points.push(screen_center + Vec2::new(a.cos(), a.sin()) * inner_radius);
+		}
+
+		points
+	}
+
 	fn draw_config_buttons(&mut self, ui: &mut Ui) {
 		egui::Area::new("bottom_right_panel".into())
 			.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
@@ -213,15 +261,19 @@ impl App {
 
 			{
 				let sb = self.soundboard.lock().unwrap();
-				let (name, icon) = match &sb.pages[self.page].sounds[*self.right_clicked_index.as_ref().unwrap()] {
-					RadialButton::Sound(sound) => (&sound.name, &sound.icon),
-					RadialButton::Folder(folder) => (&folder.name, &folder.icon),
-				};
+				let index = self.right_clicked_index.unwrap_or(0); // Guard index
 
-				if let Some(icon) = icon {
-					ui.label(RichText::new(format!(" {}   {}", icon, name)).color(Color32::from_hex("#cdd6f4").unwrap()));
-				} else {
-					ui.label(format!(" {}", name));
+				if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
+					let (name, icon) = match sound_node {
+						RadialButton::Sound(sound) => (&sound.name, &sound.icon),
+						RadialButton::Folder(folder) => (&folder.name, &folder.icon),
+					};
+
+					if let Some(icon) = icon {
+						ui.label(RichText::new(format!(" {}   {}", icon, name)).color(Color32::from_hex("#cdd6f4").unwrap()));
+					} else {
+						ui.label(format!(" {}", name));
+					}
 				}
 			}
 
@@ -263,63 +315,85 @@ impl App {
 		});
 		let painter = ui.painter_at(area_rect);
 
+		let slice_angle = TAU / num_items as f32;
+		let slice_angle_l1 = 0.7;
+
+		let mut new_selected_index = None;
+		let mut new_active_folder = self.active_folder;
+
 		if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-			let to_pointer = pointer_pos - screen_center;
-			let distance = to_pointer.length();
+			let sb = self.soundboard.lock().unwrap();
 
-			let ring_0_inner = base_inner_radius;
-			let ring_0_outer = base_outer_radius;
-			let ring_1_inner = base_outer_radius + button_spacing * 2.0;
-			let ring_1_outer = ring_1_inner + (base_outer_radius - base_inner_radius);
+			// check level 1 hits first (foreground elements)
+			if let Some(folder_idx) = self.active_folder {
+				if let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
+					for sub_idx in 0..folder.sounds.len() {
+						let start_angle = (folder_idx as f32 + sub_idx as f32) * slice_angle_l1;
+						let angle_l1 = start_angle + slice_angle_l1 / 2.0;
 
-			let mut detected_level = None;
-			if distance >= ring_0_inner && distance <= ring_0_outer {
-				detected_level = Some(0);
-			} else if distance >= ring_1_inner && distance <= ring_1_outer {
-				detected_level = Some(1);
+						// Calculate bounds matching the Level 1 draw bounds exactly
+						let inner_r = base_outer_radius + button_spacing * 2.0 + hover_expand;
+						let outer_r = base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2.0 + hover_expand;
+
+						let points = Self::get_wedge_polygon(screen_center, inner_r, outer_r, button_spacing, slice_angle_l1, angle_l1);
+
+						if Self::point_in_polygon(pointer_pos, &points) {
+							new_selected_index = Some((1, sub_idx));
+							break;
+						}
+					}
+				}
 			}
 
-			if let Some(level) = detected_level {
-				let mut angle = to_pointer.y.atan2(to_pointer.x);
-				if angle < 0.0 {
-					angle += TAU;
+			// check level 0 hits if not hovering a level 1 item
+			if new_selected_index.is_none() {
+				for i in 0..num_items {
+					let angle = (i as f32) * slice_angle;
+
+					let points = Self::get_wedge_polygon(screen_center, base_inner_radius, base_outer_radius, button_spacing, slice_angle, angle);
+
+					if Self::point_in_polygon(pointer_pos, &points) {
+						new_selected_index = Some((0, i));
+
+						if let RadialButton::Folder(_) = &sb.pages[self.page].sounds[i] {
+							new_active_folder = Some(i);
+						} else {
+							new_active_folder = None; // Reset folder if hovering a regular sound
+						}
+						break;
+					}
 				}
+			}
 
-				let slice_angle = TAU / num_items as f32;
-				let adjusted_angle = (angle + slice_angle / 2.0) % TAU;
-				let index = (adjusted_angle / slice_angle) as usize % num_items;
-
-				self.selected_index = Some((level, index));
-				let sb = self.soundboard.lock().unwrap();
-
-				if response.clicked() {
+			if response.clicked() {
+				if let Some((level, idx)) = new_selected_index {
 					match level {
 						0 => {
-							if let RadialButton::Sound(sound) = &sb.pages[self.page].sounds[index] {
+							if let RadialButton::Sound(sound) = &sb.pages[self.page].sounds[idx] {
 								let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
 								self.visible = false;
 								ui.send_viewport_cmd(ViewportCommand::Visible(false));
 							}
 						},
 						1 => {
-							if let RadialButton::Folder(folder) = &sb.pages[self.page].sounds[index] {
-								let relative_index = index.saturating_sub(index);
-								if let Some(sound) = folder.sounds.get(relative_index) {
-									let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
-									self.visible = false;
-									ui.send_viewport_cmd(ViewportCommand::Visible(false));
+							if let Some(folder_idx) = self.active_folder {
+								if let RadialButton::Folder(folder) = &sb.pages[self.page].sounds[folder_idx] {
+									if let Some(sound) = folder.sounds.get(idx) {
+										let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
+										self.visible = false;
+										ui.send_viewport_cmd(ViewportCommand::Visible(false));
+									}
 								}
 							}
 						},
 						_ => {},
 					}
 				}
-			} else {
-				self.selected_index = None;
 			}
-		} else {
-			self.selected_index = None;
 		}
+
+		self.selected_index = new_selected_index;
+		self.active_folder = new_active_folder;
 
 		if self.selected_index.is_some() {
 			ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -331,8 +405,7 @@ impl App {
 
 		self.last_index = self.selected_index;
 
-		let slice_angle = TAU / num_items as f32;
-
+		// level 0
 		for sound_item_index in 0..num_items {
 			let (name, icon, color) = {
 				let sb = self.soundboard.lock().unwrap();
@@ -361,29 +434,30 @@ impl App {
 			);
 		}
 
-		if let Some((_ring_index, item_index)) = &self.selected_index
-			&& let RadialButton::Folder(folder) = &self.soundboard.lock().unwrap().pages[self.page].sounds[*item_index]
-		{
-			let slice_angle = 0.7;
-			for index in 0..folder.sounds.len() {
-				let start_angle = (*item_index as f32 + index as f32) * slice_angle;
+		// level 1
+		if let Some(folder_idx) = self.active_folder {
+			let sb = self.soundboard.lock().unwrap();
+			if let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
+				for index in 0..folder.sounds.len() {
+					let start_angle = (folder_idx as f32 + index as f32) * slice_angle_l1;
 
-				self.draw_radial_button(
-					ui,
-					&painter,
-					folder.sounds[index].name(),
-					folder.sounds[index].icon(),
-					Color32::from_hex("#b4befe").unwrap(),
-					screen_center,
-					base_outer_radius + button_spacing * 2. + hover_expand,
-					base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2. + hover_expand,
-					hover_expand,
-					button_spacing,
-					*item_index + index,
-					slice_angle,
-					start_angle + slice_angle / 2.,
-					1,
-				);
+					self.draw_radial_button(
+						ui,
+						&painter,
+						folder.sounds[index].name(),
+						folder.sounds[index].icon(),
+						Color32::from_hex("#b4befe").unwrap(),
+						screen_center,
+						base_outer_radius + button_spacing * 2. + hover_expand,
+						base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2. + hover_expand,
+						hover_expand,
+						button_spacing,
+						index,
+						slice_angle_l1,
+						start_angle + slice_angle_l1 / 2.,
+						1,
+					);
+				}
 			}
 		}
 	}
@@ -422,34 +496,13 @@ impl App {
 		let current_outer_radius = base_outer_radius + (hover_expand * hover_t);
 		let current_inner_radius = base_inner_radius + (3.0 * hover_t);
 
-		let outer_gap_angle = button_spacing / current_outer_radius;
-		let inner_gap_angle = button_spacing / current_inner_radius;
-
-		let start_angle_outer = angle - (slice_angle / 2.0) + outer_gap_angle;
-		let end_angle_outer = angle + (slice_angle / 2.0) - outer_gap_angle;
-
-		let start_angle_inner = angle - (slice_angle / 2.0) + inner_gap_angle;
-		let end_angle_inner = angle + (slice_angle / 2.0) - inner_gap_angle;
-
-		let mut points = Vec::new();
-		let num_arc_points = 12; // High resolution for smooth curves
-
-		for step in 0..=num_arc_points {
-			let t = step as f32 / num_arc_points as f32;
-			let a = start_angle_outer + (end_angle_outer - start_angle_outer) * t;
-			points.push(screen_center + Vec2::new(a.cos(), a.sin()) * current_outer_radius);
-		}
-
-		for step in (0..=num_arc_points).rev() {
-			let t = step as f32 / num_arc_points as f32;
-			let a = start_angle_inner + (end_angle_inner - start_angle_inner) * t;
-			points.push(screen_center + Vec2::new(a.cos(), a.sin()) * current_inner_radius);
-		}
+		// Fetch points securely from our shared geometric algorithm
+		let points = Self::get_wedge_polygon(screen_center, current_inner_radius, current_outer_radius, button_spacing, slice_angle, angle);
 
 		self.draw_shadow(painter, &points);
 		let fill_shape = Shape::convex_polygon(points.clone(), fill_color, Stroke::NONE);
 		painter.add(fill_shape);
-		painter.add(Shape::closed_line(points.clone(), Stroke::new(stroke_width, stroke_color)));
+		painter.add(Shape::closed_line(points, Stroke::new(stroke_width, stroke_color)));
 
 		let mid_radius = (current_inner_radius + current_outer_radius) / 2.0;
 		let label_pos = screen_center + Vec2::new(angle.cos(), angle.sin()) * mid_radius;
@@ -495,7 +548,6 @@ impl eframe::App for App {
 				AppEvent::Show => {
 					self.visible = true;
 					ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-					// ctx.send_viewport_cmd(ViewportCommand::Focus);
 				},
 				AppEvent::Toggle => {
 					if self.visible {
@@ -504,7 +556,6 @@ impl eframe::App for App {
 					} else {
 						self.visible = true;
 						ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-						// ctx.send_viewport_cmd(ViewportCommand::Focus);
 					}
 				},
 				AppEvent::Hide => {
