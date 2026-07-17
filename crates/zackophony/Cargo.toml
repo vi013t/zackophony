@@ -8,6 +8,7 @@ resolver = "3"
 [dependencies]
 anyhow = "1.0.103"
 derive-getters = "0.5.0"
+directories = "6.0.0"
 eframe = { version = "0.35.0", features = ["glow"] }
 egui-phosphor.workspace = true
 global-hotkey = "0.8.0"
@@ -16,4 +17,5 @@ rand = "0.10.2"
 rfd = "0.17.2"
 ringbuf = "0.5.1"
 rodio = "0.22.2"
+serde_json = "1.0.150"
 uuid = { version = "1.24.0", features = ["v4"] }

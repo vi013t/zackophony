@@ -30,14 +30,20 @@ use rodio::{
 
 #[derive(Clone)]
 pub struct SoundData {
+	bytes: Vec<u8>,
 	data: Buffered<Decoder<Cursor<Vec<u8>>>>,
 }
 
 impl SoundData {
 	pub fn new(bytes: Vec<u8>) -> anyhow::Result<SoundData> {
 		Ok(SoundData {
+			bytes: bytes.clone(),
 			data: Decoder::try_from(Cursor::new(bytes))?.buffered(),
 		})
+	}
+
+	pub fn bytes(&self) -> &[u8] {
+		&self.bytes
 	}
 }
 

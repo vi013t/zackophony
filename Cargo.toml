@@ -9,7 +9,6 @@ members = ["crates/zackophony", "crates/egui-phosphor"]
 resolver = "3"
 
 [workspace.dependencies]
-zackophony = { version = "0.1.0", path = "crates/zackophony" }
 egui-phosphor = { path = "crates/egui-phosphor" }
 
 [profile.release]

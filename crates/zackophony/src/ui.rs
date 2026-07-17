@@ -27,6 +27,7 @@ use eframe::{
 		RichText,
 		Shadow,
 		Shape,
+		Slider,
 		Stroke,
 		TextWrapMode,
 		Ui,
@@ -35,10 +36,10 @@ use eframe::{
 		ViewportBuilder,
 		ViewportCommand,
 		Visuals,
+		style::HandleShape,
 		vec2,
 	},
 	emath::Rot2,
-	epaint::MarginF32,
 };
 use egui_phosphor::regular as icons;
 use global_hotkey::{
@@ -56,7 +57,7 @@ use crate::{
 	NAME,
 	VERSION,
 	audio::{AudioPlayer, SoundData, UiSound},
-	soundboard::{Preferences, SoundTreeNode, Soundboard},
+	soundboard::{SoundTreeNode, Soundboard, SoundboardConfig},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
@@ -89,9 +90,8 @@ pub struct App {
 	rng: ThreadRng,
 
 	audio_player: Arc<Mutex<AudioPlayer>>,
-	soundboard: Arc<Mutex<Soundboard>>,
 	hotkeys: Arc<Mutex<HashMap<HotKey, HotkeyAction>>>,
-	preferences: Preferences,
+	preferences: SoundboardConfig,
 	cute_message: &'static str,
 
 	selected_index: Option<(usize, usize)>,
@@ -122,8 +122,7 @@ impl App {
 			_hotkey_manager: hotkey_manager,
 			hotkeys: Arc::new(Mutex::new(hotkeys)),
 			screen: AppScreen::Soundboard,
-			soundboard: Arc::new(Mutex::new(soundboard)),
-			preferences: Preferences::default(),
+			preferences: SoundboardConfig::default(),
 			audio_player: Arc::new(Mutex::new(audio_player)),
 			cute_message: random_cute_message(&mut rng),
 			rng,
@@ -146,6 +145,7 @@ impl App {
 			cute_message = random_cute_message(&mut self.rng);
 		}
 		self.cute_message = cute_message;
+		let _ = self.preferences.save_to_disk();
 	}
 
 	pub fn start() -> anyhow::Result<()> {
@@ -176,7 +176,7 @@ impl App {
 				cc.egui_ctx.set_fonts(fonts);
 
 				let audio_player = app.audio_player.clone();
-				let soundboard = app.soundboard.clone();
+				let soundboard = app.preferences.soundboard.clone();
 				let hotkeys = app.hotkeys.clone();
 
 				std::thread::spawn(move || {
@@ -189,15 +189,15 @@ impl App {
 									match action {
 										HotkeyAction::Hold { on_press, on_release } => {
 											if event.state == HotKeyState::Pressed {
-												on_press.run(soundboard.clone(), audio_player.clone(), &tx);
+												on_press.run(&soundboard, audio_player.clone(), &tx);
 											} else if event.state == HotKeyState::Released {
-												on_release.run(soundboard.clone(), audio_player.clone(), &tx);
+												on_release.run(&soundboard, audio_player.clone(), &tx);
 											}
 										},
 
 										HotkeyAction::Press(ui_action) => {
 											if event.state == HotKeyState::Pressed {
-												ui_action.run(soundboard.clone(), audio_player.clone(), &tx);
+												ui_action.run(&soundboard, audio_player.clone(), &tx);
 											}
 										},
 									}
@@ -323,7 +323,7 @@ impl App {
 		let hover_expand = 10.0;
 		let button_spacing = 8.0;
 
-		let num_items = self.soundboard.lock().unwrap().pages[self.page].sounds.len();
+		let num_items = self.preferences.soundboard.pages[self.page].sounds.len();
 
 		if num_items == 0 {
 			return;
@@ -346,7 +346,7 @@ impl App {
 				visuals.window_stroke = Stroke::new(1., self.preferences.theme.sound_border());
 
 				{
-					let sb = self.soundboard.lock().unwrap();
+					let sb = &self.preferences.soundboard;
 					let index = self.right_clicked_index.unwrap_or(0);
 
 					if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
@@ -408,7 +408,7 @@ impl App {
 			let mut new_active_folder = self.active_folder;
 
 			if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-				let sb = self.soundboard.lock().unwrap();
+				let sb = &self.preferences.soundboard;
 
 				// check level 1 hits first (foreground elements)
 				if let Some(folder_idx) = self.active_folder
@@ -457,7 +457,6 @@ impl App {
 						0 => {
 							if let SoundTreeNode::Sound(sound) = &sb.pages[self.page].sounds[idx] {
 								let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
-								drop(sb);
 								self.hide(ui);
 							}
 						},
@@ -467,7 +466,6 @@ impl App {
 								&& let Some(sound) = folder.sounds.get(idx)
 							{
 								let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
-								drop(sb);
 								self.hide(ui);
 							}
 						},
@@ -492,7 +490,7 @@ impl App {
 			// inner level
 			for sound_item_index in 0..num_items {
 				let center_angle = (sound_item_index as f32) * slice_angle;
-				let node = &self.soundboard.lock().unwrap().pages[self.page].sounds[sound_item_index];
+				let node = &self.preferences.soundboard.pages[self.page].sounds[sound_item_index];
 				self.draw_radial_button(
 					ui,
 					&painter,
@@ -526,7 +524,7 @@ impl App {
 
 			// outer level
 			if let Some(folder_idx) = self.active_folder {
-				let sb = self.soundboard.lock().unwrap();
+				let sb = &self.preferences.soundboard;
 				if let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
 					for index in 0..folder.sounds.len() {
 						let centering_offset = (folder.sounds.len() as f32 - 1.) / 2. * slice_angle_l1;
@@ -776,7 +774,18 @@ impl App {
 									ui.columns(2, |ui| {
 										ui[0].vertical(|ui| {
 											ui.label(RichText::new("Theme"));
-											ui.label(RichText::new("Overlay opacity"));
+											ui.horizontal(|ui| {
+												ui.visuals_mut().widgets.inactive.fg_stroke.color = self.preferences.theme.text();
+												ui.visuals_mut().widgets.hovered.fg_stroke.color = self.preferences.theme.text();
+												ui.visuals_mut().widgets.active.fg_stroke.color = self.preferences.theme.sound_border();
+
+												ui.visuals_mut().widgets.inactive.bg_fill = self.preferences.theme.text_dim();
+												ui.visuals_mut().widgets.active.bg_fill = self.preferences.theme.sound_border();
+												ui.visuals_mut().selection.bg_fill = self.preferences.theme.sound_border();
+
+												ui.label(RichText::new("Background opacity").size(16.).color(self.preferences.theme.text()));
+												ui.add(Slider::new(&mut self.preferences.background_opacity, 0. ..=255.).integer().show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+											});
 										});
 									});
 								},
@@ -861,9 +870,8 @@ impl App {
 									ui.horizontal(|ui| {
 										ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Max), |ui| {
 											ui.vertical(|ui| {
-												let sb = self.soundboard.lock().unwrap();
+												let sb = &self.preferences.soundboard;
 												let nodes = sb.pages[self.page].sounds.clone();
-												drop(sb);
 
 												for sound_node in nodes {
 													self.draw_sound_node(ui, sound_node.id());
@@ -918,9 +926,8 @@ impl App {
 	}
 
 	fn draw_sound_node(&mut self, ui: &mut Ui, id: Uuid) {
-		let sb = self.soundboard.lock().unwrap();
+		let sb = &self.preferences.soundboard;
 		let sound_node = sb.get_sound_node(id).unwrap().clone();
-		drop(sb);
 
 		ui.vertical(|ui| {
 			let label = if let Some(icon) = sound_node.icon() {
@@ -961,7 +968,7 @@ impl App {
 				.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
 				.show(ui, |ui| {
 					ui.horizontal(|ui| {
-						let mut page_name = self.soundboard.lock().unwrap().pages[self.page].name.clone();
+						let mut page_name = self.preferences.soundboard.pages[self.page].name.clone();
 						if page_name.is_empty() {
 							page_name = format!("Page {}", self.page + 1);
 						}
@@ -992,7 +999,7 @@ impl App {
 						ui.add_space(100.);
 
 						ui.label(
-							RichText::new(format!("{} / {}", self.page + 1, self.soundboard.lock().unwrap().pages.len()))
+							RichText::new(format!("{} / {}", self.page + 1, self.preferences.soundboard.pages.len()))
 								.color(Color32::from_hex("#b4befe").unwrap())
 								.size(16.),
 						);
@@ -1010,7 +1017,7 @@ impl App {
 							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
 						}
 
-						if page_right.clicked() && self.page < self.soundboard.lock().unwrap().pages.len() - 1 {
+						if page_right.clicked() && self.page < self.preferences.soundboard.pages.len() - 1 {
 							self.page += 1;
 						}
 					});
@@ -1050,7 +1057,7 @@ impl eframe::App for App {
 		}
 
 		if self.visible {
-			let overlay_frame = egui::Frame::NONE.fill(Color32::from_black_alpha(100));
+			let overlay_frame = egui::Frame::NONE.fill(Color32::from_black_alpha(self.preferences.background_opacity.floor() as u8));
 			self.draw_screen(ui, overlay_frame);
 		}
 	}
@@ -1067,7 +1074,7 @@ pub enum UiAction {
 }
 
 impl UiAction {
-	fn run(&self, soundboard: Arc<Mutex<Soundboard>>, audio_player: Arc<Mutex<AudioPlayer>>, tx: &Sender<AppEvent>) {
+	fn run(&self, soundboard: &Soundboard, audio_player: Arc<Mutex<AudioPlayer>>, tx: &Sender<AppEvent>) {
 		match self {
 			UiAction::OpenSoundboard => {
 				let _ = tx.send(AppEvent::Show);
