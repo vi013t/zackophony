@@ -14,6 +14,7 @@ use ringbuf::{
 use rodio::{
 	ChannelCount,
 	Decoder,
+	Device,
 	DeviceSinkBuilder,
 	DeviceTrait as _,
 	MixerDeviceSink,
@@ -128,6 +129,16 @@ impl AudioPlayer {
 	pub fn play_ui_sound(&self, sound: UiSound) -> anyhow::Result<()> {
 		self.monitor_sink.mixer().add(self.ui_sounds.get(&sound).unwrap().clone().amplify(0.01));
 		Ok(())
+	}
+
+	pub fn output_devices() -> Vec<Device> {
+		let host = rodio::cpal::default_host();
+		host.output_devices().map(|devices| devices.collect()).unwrap_or_else(|_| Vec::new())
+	}
+
+	pub fn input_devices() -> Vec<Device> {
+		let host = rodio::cpal::default_host();
+		host.input_devices().map(|devices| devices.collect()).unwrap_or_else(|_| Vec::new())
 	}
 
 	fn start_microphone(level: Arc<Mutex<f32>>) -> anyhow::Result<(Stream, Arc<Mutex<ringbuf::HeapCons<f32>>>)> {

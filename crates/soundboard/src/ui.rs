@@ -20,6 +20,7 @@ use global_hotkey::{
 	hotkey::{Code, HotKey, Modifiers},
 };
 use rfd::FileDialog;
+use rodio::DeviceTrait;
 use uuid::Uuid;
 
 use crate::{
@@ -27,6 +28,11 @@ use crate::{
 	audio::{AudioPlayer, SoundData, UiSound},
 	soundboard::{RadialButton, Soundboard},
 };
+
+enum AppScreen {
+	Soundboard,
+	Settings,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 enum AppEvent {
@@ -37,6 +43,7 @@ enum AppEvent {
 
 pub struct App {
 	visible: bool,
+	screen: AppScreen,
 
 	_hotkey_manager: GlobalHotKeyManager,
 	rx: Receiver<AppEvent>,
@@ -61,10 +68,7 @@ impl App {
 		}
 
 		let hotkey_manager = GlobalHotKeyManager::new()?;
-		let hotkeys = HashMap::from([
-			(HotKey::new(Some(Modifiers::SHIFT), Code::Backquote), HotkeyAction::Press(UiAction::ToggleSoundboard)),
-			(HotKey::new(None, Code::Escape), HotkeyAction::Press(UiAction::CloseSoundboard)),
-		]);
+		let hotkeys = HashMap::from([(HotKey::new(Some(Modifiers::SHIFT), Code::Backquote), HotkeyAction::Press(UiAction::ToggleSoundboard))]);
 
 		for hotkey in hotkeys.keys() {
 			hotkey_manager.register(*hotkey)?;
@@ -73,6 +77,7 @@ impl App {
 		Ok(App {
 			_hotkey_manager: hotkey_manager,
 			hotkeys: Arc::new(Mutex::new(hotkeys)),
+			screen: AppScreen::Soundboard,
 			soundboard: Arc::new(Mutex::new(soundboard)),
 			audio_player: Arc::new(Mutex::new(audio_player)),
 			rx,
@@ -152,9 +157,6 @@ impl App {
 		Ok(())
 	}
 
-	// --- Hit Detection Helpers ---
-
-	/// Standard Ray-Casting algorithm for Point-in-Polygon collision detection.
 	fn point_in_polygon(pos: Pos2, polygon: &[Pos2]) -> bool {
 		let mut inside = false;
 		let mut j = polygon.len() - 1;
@@ -169,7 +171,6 @@ impl App {
 		inside
 	}
 
-	/// generates the geometric bounds of a wedge. used for both hit testing and drawing.
 	fn get_wedge_polygon(screen_center: Pos2, inner_radius: f32, outer_radius: f32, button_spacing: f32, slice_angle: f32, angle: f32) -> Vec<Pos2> {
 		let outer_gap_angle = button_spacing / outer_radius.max(1.0);
 		let inner_gap_angle = button_spacing / inner_radius.max(1.0);
@@ -228,6 +229,10 @@ impl App {
 							.corner_radius(25.)
 							.fill(Color32::from_hex("#11111bcc").unwrap()),
 					);
+
+					if settings_button.clicked() {
+						self.screen = AppScreen::Settings;
+					}
 				});
 			});
 	}
@@ -325,22 +330,21 @@ impl App {
 			let sb = self.soundboard.lock().unwrap();
 
 			// check level 1 hits first (foreground elements)
-			if let Some(folder_idx) = self.active_folder {
-				if let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
-					for sub_idx in 0..folder.sounds.len() {
-						let start_angle = (folder_idx as f32 + sub_idx as f32) * slice_angle_l1;
-						let angle_l1 = start_angle + slice_angle_l1 / 2.0;
+			if let Some(folder_idx) = self.active_folder
+				&& let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx)
+			{
+				for sub_idx in 0..folder.sounds.len() {
+					let start_angle = (folder_idx as f32 + sub_idx as f32) * slice_angle_l1;
+					let angle_l1 = start_angle + slice_angle_l1 / 2.0;
 
-						// Calculate bounds matching the Level 1 draw bounds exactly
-						let inner_r = base_outer_radius + button_spacing * 2.0 + hover_expand;
-						let outer_r = base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2.0 + hover_expand;
+					let inner_r = base_outer_radius + button_spacing * 2.0 + hover_expand;
+					let outer_r = base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2.0 + hover_expand;
 
-						let points = Self::get_wedge_polygon(screen_center, inner_r, outer_r, button_spacing, slice_angle_l1, angle_l1);
+					let points = Self::get_wedge_polygon(screen_center, inner_r, outer_r, button_spacing, slice_angle_l1, angle_l1);
 
-						if Self::point_in_polygon(pointer_pos, &points) {
-							new_selected_index = Some((1, sub_idx));
-							break;
-						}
+					if Self::point_in_polygon(pointer_pos, &points) {
+						new_selected_index = Some((1, sub_idx));
+						break;
 					}
 				}
 			}
@@ -365,29 +369,28 @@ impl App {
 				}
 			}
 
-			if response.clicked() {
-				if let Some((level, idx)) = new_selected_index {
-					match level {
-						0 => {
-							if let RadialButton::Sound(sound) = &sb.pages[self.page].sounds[idx] {
-								let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
-								self.visible = false;
-								ui.send_viewport_cmd(ViewportCommand::Visible(false));
-							}
-						},
-						1 => {
-							if let Some(folder_idx) = self.active_folder {
-								if let RadialButton::Folder(folder) = &sb.pages[self.page].sounds[folder_idx] {
-									if let Some(sound) = folder.sounds.get(idx) {
-										let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
-										self.visible = false;
-										ui.send_viewport_cmd(ViewportCommand::Visible(false));
-									}
-								}
-							}
-						},
-						_ => {},
-					}
+			if response.clicked()
+				&& let Some((level, idx)) = new_selected_index
+			{
+				match level {
+					0 => {
+						if let RadialButton::Sound(sound) = &sb.pages[self.page].sounds[idx] {
+							let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
+							self.visible = false;
+							ui.send_viewport_cmd(ViewportCommand::Visible(false));
+						}
+					},
+					1 => {
+						if let Some(folder_idx) = self.active_folder
+							&& let RadialButton::Folder(folder) = &sb.pages[self.page].sounds[folder_idx]
+							&& let Some(sound) = folder.sounds.get(idx)
+						{
+							let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
+							self.visible = false;
+							ui.send_viewport_cmd(ViewportCommand::Visible(false));
+						}
+					},
+					_ => {},
 				}
 			}
 		}
@@ -535,6 +538,117 @@ impl App {
 			));
 		}
 	}
+
+	fn draw_screen(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+		match self.screen {
+			AppScreen::Soundboard => self.draw_soundboard(ui, overlay_frame),
+			AppScreen::Settings => self.draw_settings(ui, overlay_frame),
+		}
+	}
+
+	fn draw_settings(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
+			egui::CentralPanel::default()
+				.frame(egui::Frame::new().fill(Color32::from_hex("#1e1e2e").unwrap()))
+				.show(ui, |ui| {
+					ui.columns(2, |ui| {
+						ui[0].vertical(|ui| {
+							ui.label("Devices");
+
+							ui.label("Output device: ");
+							ui.label("Input device: ");
+							ui.label("Virtual cable device: ");
+
+							ui.label("Appearance");
+
+							ui.label("Sound color");
+							ui.label("Folder color");
+
+							ui.label("Hotkeys");
+						});
+
+						ui[1].vertical(|ui| {
+							egui::ComboBox::new("output-devices", "").show_ui(ui, |ui| {
+								for output_device in AudioPlayer::output_devices() {
+									ui.label(output_device.description().unwrap().extended().join(", "));
+								}
+							});
+							egui::ComboBox::new("input-devices", "").show_ui(ui, |ui| {
+								for input_device in AudioPlayer::input_devices() {
+									ui.label(input_device.description().unwrap().extended().join(", "));
+								}
+							});
+						});
+					});
+				});
+		});
+	}
+
+	fn draw_soundboard(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
+			self.draw_config_buttons(ui);
+			egui::Area::new("page_name".into())
+				.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
+				.show(ui, |ui| {
+					ui.horizontal(|ui| {
+						let mut page_name = self.soundboard.lock().unwrap().pages[self.page].name.clone();
+						if page_name.is_empty() {
+							page_name = format!("Page {}", self.page + 1);
+						}
+						ui.label(RichText::new(page_name).color(Color32::from_hex("#b4befe").unwrap()));
+					});
+				});
+
+			egui::Area::new("page_selector".into())
+				.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 200.0))
+				.show(ui, |ui| {
+					ui.horizontal(|ui| {
+						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+						let page_left = ui.add(
+							Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
+								.fill(Color32::from_hex("#11111bcc").unwrap())
+								.min_size(Vec2::splat(30.))
+								.corner_radius(15.),
+						);
+
+						if page_left.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+
+						if page_left.clicked() && self.page > 0 {
+							self.page -= 1;
+						}
+
+						ui.add_space(100.);
+
+						ui.label(
+							RichText::new(format!("{} / {}", self.page + 1, self.soundboard.lock().unwrap().pages.len()))
+								.color(Color32::from_hex("#b4befe").unwrap())
+								.size(16.),
+						);
+
+						ui.add_space(100.);
+
+						let page_right = ui.add(
+							Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
+								.fill(Color32::from_hex("#11111bcc").unwrap())
+								.min_size(Vec2::splat(30.))
+								.corner_radius(15.),
+						);
+
+						if page_right.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+
+						if page_right.clicked() && self.page < self.soundboard.lock().unwrap().pages.len() - 1 {
+							self.page += 1;
+						}
+					});
+				});
+
+			self.draw_menu(ui);
+		});
+	}
 }
 
 impl eframe::App for App {
@@ -542,86 +656,32 @@ impl eframe::App for App {
 		egui::Rgba::TRANSPARENT.to_array()
 	}
 
-	fn ui(&mut self, ctx: &mut Ui, _frame: &mut Frame) {
+	fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
 		while let Ok(event) = self.rx.try_recv() {
 			match event {
 				AppEvent::Show => {
 					self.visible = true;
-					ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+					ui.send_viewport_cmd(ViewportCommand::Visible(true));
 				},
 				AppEvent::Toggle => {
 					if self.visible {
 						self.visible = false;
-						ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+						ui.send_viewport_cmd(ViewportCommand::Visible(false));
 					} else {
 						self.visible = true;
-						ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+						ui.send_viewport_cmd(ViewportCommand::Visible(true));
 					}
 				},
 				AppEvent::Hide => {
 					self.visible = false;
-					ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+					ui.send_viewport_cmd(ViewportCommand::Visible(false));
 				},
 			}
 		}
 
 		if self.visible {
-			let overlay_frame = egui::Frame::NONE.fill(Color32::TRANSPARENT);
-
-			egui::CentralPanel::default().frame(overlay_frame).show(ctx, |ui| {
-				self.draw_config_buttons(ui);
-				egui::Area::new("page_name".into())
-					.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
-					.show(ui, |ui| {
-						ui.horizontal(|ui| {
-							let mut page_name = self.soundboard.lock().unwrap().pages[self.page].name.clone();
-							if page_name.is_empty() {
-								page_name = format!("Page {}", self.page + 1);
-							}
-							ui.label(RichText::new(page_name).color(Color32::from_hex("#b4befe").unwrap()));
-						});
-					});
-
-				egui::Area::new("page_selector".into())
-					.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 200.0))
-					.show(ui, |ui| {
-						ui.horizontal(|ui| {
-							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-							let page_left = ui.add(
-								Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
-									.fill(Color32::from_hex("#11111bcc").unwrap())
-									.min_size(Vec2::splat(30.))
-									.corner_radius(15.),
-							);
-
-							if page_left.hovered() {
-								ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-							}
-
-							ui.add_space(100.);
-
-							ui.label(
-								RichText::new(format!("{} / {}", self.page + 1, self.soundboard.lock().unwrap().pages.len()))
-									.color(Color32::from_hex("#b4befe").unwrap())
-									.size(16.),
-							);
-
-							ui.add_space(100.);
-
-							let page_right = ui.add(
-								Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
-									.fill(Color32::from_hex("#11111bcc").unwrap())
-									.min_size(Vec2::splat(30.))
-									.corner_radius(15.),
-							);
-							if page_right.hovered() {
-								ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-							}
-						});
-					});
-
-				self.draw_menu(ui);
-			});
+			let overlay_frame = egui::Frame::NONE.fill(Color32::from_black_alpha(100));
+			self.draw_screen(ui, overlay_frame);
 		}
 	}
 }
