@@ -284,24 +284,24 @@ impl App {
 			.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
 			.show(ui, |ui| {
 				ui.vertical(|ui| {
-					let upload_button = ui.add(
-						Button::new(RichText::new("+").size(25.))
-							.min_size(Vec2::splat(50.))
-							.corner_radius(25.)
-							.fill(Color32::from_hex("#11111bcc").unwrap()),
-					);
+					// let upload_button = ui.add(
+					// 	Button::new(RichText::new("+").size(25.))
+					// 		.min_size(Vec2::splat(50.))
+					// 		.corner_radius(25.)
+					// 		.fill(Color32::from_hex("#11111bcc").unwrap()),
+					// );
 
-					if upload_button.clicked()
-						&& let Some(path) = FileDialog::new().add_filter("Audio files", &["mp3"]).pick_file()
-					{
-						let _ = self.audio_player.lock().unwrap().upload_user_sound(
-							#[allow(clippy::unnecessary_to_owned, reason = "false positive; will error without this")]
-							&path.file_name().unwrap().to_str().unwrap().to_string(),
-							SoundData::new(std::fs::read(path).unwrap()).unwrap(),
-						);
-					}
+					// if upload_button.clicked()
+					// 	&& let Some(path) = FileDialog::new().add_filter("Audio files", &["mp3"]).pick_file()
+					// {
+					// 	let _ = self.audio_player.lock().unwrap().upload_user_sound(
+					// 		#[allow(clippy::unnecessary_to_owned, reason = "false positive; will error without this")]
+					// 		&path.file_name().unwrap().to_str().unwrap().to_string(),
+					// 		SoundData::new(std::fs::read(path).unwrap()).unwrap(),
+					// 	);
+					// }
 
-					ui.add_space(10.);
+					// ui.add_space(10.);
 
 					let settings_button = ui.add(
 						Button::new(RichText::new(icons::GEAR).size(25.).color(Color32::from_hex("#b4befe").unwrap()))
