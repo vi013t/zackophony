@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
-	audio::{AudioPlayer, SoundData},
+	audio::{AudioManager, SoundData},
 	theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
 };
 
@@ -58,6 +58,16 @@ impl SoundPage {
 			.flat_map(|s| match s {
 				SoundTreeNode::Sound(sound) => vec![sound],
 				SoundTreeNode::Group(sound_folder) => sound_folder.sounds(),
+			})
+			.collect()
+	}
+
+	pub fn sounds_mut(&mut self) -> Vec<&mut Sound> {
+		self.sounds
+			.iter_mut()
+			.flat_map(|s| match s {
+				SoundTreeNode::Sound(sound) => vec![sound],
+				SoundTreeNode::Group(sound_folder) => sound_folder.sounds_mut(),
 			})
 			.collect()
 	}
@@ -126,12 +136,16 @@ impl Soundboard {
 						data: SoundData::new(include_bytes!("../assets/sounds/default/youre_grooming_me.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::BABY.to_owned()),
 						id: Uuid::new_v4(),
+						volume_for_me: 100,
+						volume_for_others: 100,
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "ZERO".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/zero.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::CROSSHAIR.to_owned()),
 						id: Uuid::new_v4(),
+						volume_for_me: 100,
+						volume_for_others: 100,
 					}),
 					SoundTreeNode::Group(SoundGroup {
 						name: "schizophrenia".to_owned(),
@@ -143,12 +157,16 @@ impl Soundboard {
 								data: SoundData::new(include_bytes!("../assets/sounds/default/skill_check.mp3").to_vec())?,
 								icon: Some(egui_phosphor::regular::SKULL.to_owned()),
 								id: Uuid::new_v4(),
+								volume_for_me: 100,
+								volume_for_others: 100,
 							}),
 							SoundTreeNode::Sound(Sound {
 								name: "steps".to_owned(),
 								data: SoundData::new(include_bytes!("../assets/sounds/default/steps.mp3").to_vec())?,
 								icon: Some(egui_phosphor::regular::FOOTPRINTS.to_owned()),
 								id: Uuid::new_v4(),
+								volume_for_me: 100,
+								volume_for_others: 100,
 							}),
 						],
 					}),
@@ -157,18 +175,24 @@ impl Soundboard {
 						data: SoundData::new(include_bytes!("../assets/sounds/default/not_real.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::GAME_CONTROLLER.to_owned()),
 						id: Uuid::new_v4(),
+						volume_for_me: 100,
+						volume_for_others: 100,
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "never again".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/never_again.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::FLASHLIGHT.to_owned()),
 						id: Uuid::new_v4(),
+						volume_for_me: 100,
+						volume_for_others: 100,
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "this button?".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/this_button.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::KEYBOARD.to_owned()),
 						id: Uuid::new_v4(),
+						volume_for_me: 100,
+						volume_for_others: 100,
 					}),
 				],
 			}],
@@ -179,12 +203,24 @@ impl Soundboard {
 		self.pages.iter().flat_map(|p| p.sounds()).collect()
 	}
 
+	pub fn sounds_mut(&mut self) -> Vec<&mut Sound> {
+		self.pages.iter_mut().flat_map(|p| p.sounds_mut()).collect()
+	}
+
 	pub fn sound_nodes(&self) -> Vec<&SoundTreeNode> {
 		self.pages.iter().flat_map(|p| p.sound_nodes()).collect()
 	}
 
 	pub fn get_sound_node(&self, id: Uuid) -> Option<&SoundTreeNode> {
 		self.sound_nodes().iter().find(|sound| sound.id() == id).copied()
+	}
+
+	pub fn get_sound(&self, id: Uuid) -> Option<&Sound> {
+		self.sounds().iter().find(|sound| sound.id == id).copied()
+	}
+
+	pub fn get_sound_mut(&mut self, id: Uuid) -> Option<&mut Sound> {
+		self.sounds_mut().into_iter().find(|sound| sound.id == id).map(|sound| sound as _)
 	}
 }
 
@@ -203,6 +239,16 @@ impl SoundGroup {
 			.flat_map(|s| match s {
 				SoundTreeNode::Sound(sound) => vec![sound],
 				SoundTreeNode::Group(sound_folder) => sound_folder.sounds(),
+			})
+			.collect()
+	}
+
+	pub fn sounds_mut(&mut self) -> Vec<&mut Sound> {
+		self.sounds
+			.iter_mut()
+			.flat_map(|s| match s {
+				SoundTreeNode::Sound(sound) => vec![sound],
+				SoundTreeNode::Group(sound_folder) => sound_folder.sounds_mut(),
 			})
 			.collect()
 	}
@@ -362,6 +408,8 @@ pub struct Sound {
 	pub icon: Option<String>,
 	pub data: SoundData,
 	pub id: Uuid,
+	pub volume_for_me: u8,
+	pub volume_for_others: u8,
 }
 
 impl Sound {
@@ -370,11 +418,15 @@ impl Sound {
 			r#"{{
 	"name": "{name}",
 	"icon": {icon},
+	"volume_for_me": {volume_for_me},
+	"volume_for_others": {volume_for_others},
 	"data": [{data}],
 	"id": "{id}"
 }}"#,
 			name = self.name,
 			icon = self.icon.as_ref().map(|icon| format!(r#""{icon}""#)).unwrap_or_else(|| "null".to_owned()),
+			volume_for_me = self.volume_for_me,
+			volume_for_others = self.volume_for_others,
 			data = self.data.bytes().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "),
 			id = self.id,
 		)
@@ -390,6 +442,16 @@ impl Sound {
 				.ok_or_else(|| anyhow::anyhow!("name is not a string"))?
 				.to_owned(),
 			icon: json.get("icon").ok_or_else(|| anyhow::anyhow!("missing icon"))?.as_str().map(|s| s.to_owned()),
+			volume_for_me: json
+				.get("volume_for_me")
+				.ok_or_else(|| anyhow::anyhow!("missing volume_for_me"))?
+				.as_u64()
+				.ok_or_else(|| anyhow::anyhow!("volume_for_me is not a number"))? as u8,
+			volume_for_others: json
+				.get("volume_for_others")
+				.ok_or_else(|| anyhow::anyhow!("missing volume_for_others"))?
+				.as_u64()
+				.ok_or_else(|| anyhow::anyhow!("volume_for_others is not a number"))? as u8,
 			id: Uuid::from_str(
 				json.get("id")
 					.ok_or_else(|| anyhow::anyhow!("missing id"))?
@@ -436,19 +498,19 @@ impl Default for SoundboardConfig {
 			let theme = THEMES
 				.iter()
 				.find(|theme| json.get("theme").and_then(|theme| theme.as_str()).is_some_and(|name| name == theme.name()));
-			let virtual_cable_device = AudioPlayer::output_devices().into_iter().find(|device| {
+			let virtual_cable_device = AudioManager::output_devices().into_iter().find(|device| {
 				device.id().is_ok_and(|id| {
 					json.get("virtual_cable_device")
 						.and_then(|device| device.as_str())
 						.is_some_and(|device| device == id.to_string())
 				})
 			});
-			let output_device = AudioPlayer::output_devices().into_iter().find(|device| {
+			let output_device = AudioManager::output_devices().into_iter().find(|device| {
 				device
 					.id()
 					.is_ok_and(|id| json.get("output_device").and_then(|device| device.as_str()).is_some_and(|device| device == id.to_string()))
 			});
-			let input_device = AudioPlayer::input_devices().into_iter().find(|device| {
+			let input_device = AudioManager::input_devices().into_iter().find(|device| {
 				device
 					.id()
 					.is_ok_and(|id| json.get("input_device").and_then(|device| device.as_str()).is_some_and(|device| device == id.to_string()))
@@ -479,9 +541,9 @@ impl Default for SoundboardConfig {
 
 		let preferences = SoundboardConfig {
 			theme: &CATPPUCCIN_MOCHA,
-			virtual_cable_device: AudioPlayer::default_virtual_device(),
-			input_device: AudioPlayer::default_input_device(),
-			output_device: AudioPlayer::default_output_device(),
+			virtual_cable_device: AudioManager::default_virtual_device(),
+			input_device: AudioManager::default_input_device(),
+			output_device: AudioManager::default_output_device(),
 			background_opacity: 100.,
 			soundboard: Soundboard::new().unwrap(),
 		};

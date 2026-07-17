@@ -49,14 +49,13 @@ use global_hotkey::{
 	hotkey::{Code, HotKey, Modifiers},
 };
 use rand::{rngs::ThreadRng, seq::IndexedRandom as _};
-use rfd::FileDialog;
 use rodio::DeviceTrait;
 use uuid::Uuid;
 
 use crate::{
 	NAME,
 	VERSION,
-	audio::{AudioPlayer, SoundData, UiSound},
+	audio::{AudioManager, UiSound},
 	soundboard::{SoundTreeNode, Soundboard, SoundboardConfig},
 };
 
@@ -65,10 +64,11 @@ enum SettingsTab {
 	Appearance,
 	Hotkeys,
 	System,
-	Sounds,
+	Sounds(Option<Uuid>),
 	Support,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
 enum AppScreen {
 	Soundboard,
 	Settings(SettingsTab),
@@ -89,9 +89,9 @@ pub struct App {
 	rx: Receiver<AppEvent>,
 	rng: ThreadRng,
 
-	audio_player: Arc<Mutex<AudioPlayer>>,
+	audio_player: Arc<Mutex<AudioManager>>,
 	hotkeys: Arc<Mutex<HashMap<HotKey, HotkeyAction>>>,
-	preferences: SoundboardConfig,
+	config: SoundboardConfig,
 	cute_message: &'static str,
 
 	selected_index: Option<(usize, usize)>,
@@ -103,9 +103,13 @@ pub struct App {
 
 impl App {
 	fn new(rx: Receiver<AppEvent>) -> anyhow::Result<App> {
-		let soundboard = Soundboard::new()?;
-		let mut audio_player = AudioPlayer::new()?;
-		for sound in soundboard.sounds() {
+		let config = SoundboardConfig::default();
+		let mut audio_player = AudioManager::new(
+			config.input_device.clone().unwrap(),
+			config.output_device.clone().unwrap(),
+			config.virtual_cable_device.clone().unwrap(),
+		)?;
+		for sound in config.soundboard.sounds() {
 			audio_player.upload_user_sound(&sound.name, sound.data.clone())?;
 		}
 
@@ -122,7 +126,7 @@ impl App {
 			_hotkey_manager: hotkey_manager,
 			hotkeys: Arc::new(Mutex::new(hotkeys)),
 			screen: AppScreen::Soundboard,
-			preferences: SoundboardConfig::default(),
+			config,
 			audio_player: Arc::new(Mutex::new(audio_player)),
 			cute_message: random_cute_message(&mut rng),
 			rng,
@@ -145,7 +149,7 @@ impl App {
 			cute_message = random_cute_message(&mut self.rng);
 		}
 		self.cute_message = cute_message;
-		let _ = self.preferences.save_to_disk();
+		let _ = self.config.save_to_disk();
 	}
 
 	pub fn start() -> anyhow::Result<()> {
@@ -176,7 +180,7 @@ impl App {
 				cc.egui_ctx.set_fonts(fonts);
 
 				let audio_player = app.audio_player.clone();
-				let soundboard = app.preferences.soundboard.clone();
+				let soundboard = app.config.soundboard.clone();
 				let hotkeys = app.hotkeys.clone();
 
 				std::thread::spawn(move || {
@@ -264,15 +268,15 @@ impl App {
 			.anchor(egui::Align2::LEFT_TOP, Vec2::ZERO)
 			.show(ui, |ui| {
 				eframe::egui::Frame::NONE
-					.fill(self.preferences.theme.background())
+					.fill(self.config.theme.background())
 					.corner_radius(8.)
 					.inner_margin(8.)
 					.outer_margin(8.)
 					.show(ui, |ui| {
 						ui.vertical(|ui| {
-							ui.label(RichText::new(format!("{}   {NAME} v{VERSION}", icons::PAW_PRINT)).color(self.preferences.theme.sound_border()));
+							ui.label(RichText::new(format!("{}   {NAME} v{VERSION}", icons::PAW_PRINT)).color(self.config.theme.sound_border()));
 							ui.add_space(2.);
-							ui.add(Label::new(RichText::new(self.cute_message).color(self.preferences.theme.text())).wrap_mode(TextWrapMode::Extend));
+							ui.add(Label::new(RichText::new(self.cute_message).color(self.config.theme.text())).wrap_mode(TextWrapMode::Extend));
 						});
 					});
 			});
@@ -315,6 +319,23 @@ impl App {
 					}
 				});
 			});
+		egui::Area::new("top-right-buttons".into())
+			.order(Order::Foreground)
+			.anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, -10.0))
+			.show(ui, |ui| {
+				ui.vertical(|ui| {
+					let close_button = ui.add(
+						Button::new(RichText::new(icons::X).size(16.).color(self.config.theme.red()))
+							.min_size(Vec2::splat(40.))
+							.corner_radius(25.)
+							.fill(Color32::from_hex("#11111bcc").unwrap()),
+					);
+
+					if close_button.clicked() {
+						self.hide(ui);
+					}
+				});
+			});
 	}
 
 	fn draw_menu(&mut self, ui: &mut Ui) {
@@ -323,7 +344,7 @@ impl App {
 		let hover_expand = 10.0;
 		let button_spacing = 8.0;
 
-		let num_items = self.preferences.soundboard.pages[self.page].sounds.len();
+		let num_items = self.config.soundboard.pages[self.page].sounds.len();
 
 		if num_items == 0 {
 			return;
@@ -342,11 +363,11 @@ impl App {
 
 			response.context_menu(|ui| {
 				let visuals = ui.visuals_mut();
-				visuals.window_fill = self.preferences.theme.sound_background();
-				visuals.window_stroke = Stroke::new(1., self.preferences.theme.sound_border());
+				visuals.window_fill = self.config.theme.sound_background();
+				visuals.window_stroke = Stroke::new(1., self.config.theme.sound_border());
 
 				{
-					let sb = &self.preferences.soundboard;
+					let sb = &self.config.soundboard;
 					let index = self.right_clicked_index.unwrap_or(0);
 
 					if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
@@ -394,7 +415,7 @@ impl App {
 				ui.separator();
 
 				ui.add(
-					Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.preferences.theme.red()))
+					Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.config.theme.red()))
 						.min_size(Vec2::new(200., 25.))
 						.fill(Color32::from_hex("#11111b").unwrap()),
 				);
@@ -408,7 +429,7 @@ impl App {
 			let mut new_active_folder = self.active_folder;
 
 			if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-				let sb = &self.preferences.soundboard;
+				let sb = &self.config.soundboard;
 
 				// check level 1 hits first (foreground elements)
 				if let Some(folder_idx) = self.active_folder
@@ -490,7 +511,7 @@ impl App {
 			// inner level
 			for sound_item_index in 0..num_items {
 				let center_angle = (sound_item_index as f32) * slice_angle;
-				let node = &self.preferences.soundboard.pages[self.page].sounds[sound_item_index];
+				let node = &self.config.soundboard.pages[self.page].sounds[sound_item_index];
 				self.draw_radial_button(
 					ui,
 					&painter,
@@ -514,17 +535,13 @@ impl App {
 					let size = 15.;
 					let points = [origin, Pos2::new(origin.x + size, origin.y), Pos2::new(origin.x, origin.y + size)];
 					let rotated = rotate_triangle_around_centroid(points, angle + 3. / 8. * TAU);
-					painter.add(Shape::convex_polygon(
-						rotated,
-						self.preferences.theme.sound_group_border(),
-						Stroke::new(2.0, Color32::BLACK),
-					));
+					painter.add(Shape::convex_polygon(rotated, self.config.theme.sound_group_border(), Stroke::new(2.0, Color32::BLACK)));
 				}
 			}
 
 			// outer level
 			if let Some(folder_idx) = self.active_folder {
-				let sb = &self.preferences.soundboard;
+				let sb = &self.config.soundboard;
 				if let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
 					for index in 0..folder.sounds.len() {
 						let centering_offset = (folder.sounds.len() as f32 - 1.) / 2. * slice_angle_l1;
@@ -568,8 +585,8 @@ impl App {
 		let gap = if is_hovered { 14. } else { 12. };
 		let hover_expand = 10.0;
 
-		let fill_color = sound_node.background_color(self.preferences.theme, is_hovered);
-		let stroke_color = sound_node.border_color(self.preferences.theme, is_hovered);
+		let fill_color = sound_node.background_color(self.config.theme, is_hovered);
+		let stroke_color = sound_node.border_color(self.config.theme, is_hovered);
 		let text_color = stroke_color;
 
 		let hover_t = ui.ctx().animate_bool(ui.id().with((level, sound_item_index)), is_hovered);
@@ -631,7 +648,7 @@ impl App {
 
 			ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
 				let panel = eframe::egui::Frame::default()
-					.fill(self.preferences.theme.background())
+					.fill(self.config.theme.background())
 					.inner_margin(16.)
 					.corner_radius(8.)
 					.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
@@ -641,13 +658,13 @@ impl App {
 							ui.label(
 								RichText::new(format!(" {}   {NAME} Settings", icons::GEAR))
 									.size(16.)
-									.color(self.preferences.theme.text_bright()),
+									.color(self.config.theme.text_bright()),
 							);
 							ui.add_space(ui.available_width());
 							ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
 							ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
 							let close_button = ui.add(
-								Button::new(RichText::new(icons::X).color(self.preferences.theme.red()))
+								Button::new(RichText::new(icons::X).color(self.config.theme.red()))
 									.fill(Color32::TRANSPARENT)
 									.stroke(Stroke::NONE),
 							);
@@ -674,7 +691,7 @@ impl App {
 									let appearance_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Appearance", icons::PALETTE))
-												.color(self.preferences.theme.text_bright())
+												.color(self.config.theme.text_bright())
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -694,7 +711,7 @@ impl App {
 									let sounds_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Sounds", icons::SPEAKER_HIGH))
-												.color(self.preferences.theme.text_bright())
+												.color(self.config.theme.text_bright())
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -705,13 +722,13 @@ impl App {
 									}
 
 									if sounds_button.clicked() {
-										self.screen = AppScreen::Settings(SettingsTab::Sounds);
+										self.screen = AppScreen::Settings(SettingsTab::Sounds(None));
 									}
 
 									ui.add_space(8.);
 
 									let system_button = ui.add(
-										Button::new(RichText::new(format!(" {}   System", icons::CPU)).color(self.preferences.theme.text_bright()).size(16.))
+										Button::new(RichText::new(format!(" {}   System", icons::CPU)).color(self.config.theme.text_bright()).size(16.))
 											.fill(Color32::TRANSPARENT)
 											.stroke(Stroke::NONE),
 									);
@@ -728,7 +745,7 @@ impl App {
 									let hotkeys_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Hotkeys", icons::KEYBOARD))
-												.color(self.preferences.theme.text_bright())
+												.color(self.config.theme.text_bright())
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -748,7 +765,7 @@ impl App {
 									let support_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Support", icons::QUESTION))
-												.color(self.preferences.theme.text_bright())
+												.color(self.config.theme.text_bright())
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -775,16 +792,16 @@ impl App {
 										ui[0].vertical(|ui| {
 											ui.label(RichText::new("Theme"));
 											ui.horizontal(|ui| {
-												ui.visuals_mut().widgets.inactive.fg_stroke.color = self.preferences.theme.text();
-												ui.visuals_mut().widgets.hovered.fg_stroke.color = self.preferences.theme.text();
-												ui.visuals_mut().widgets.active.fg_stroke.color = self.preferences.theme.sound_border();
+												ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+												ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+												ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.sound_border();
 
-												ui.visuals_mut().widgets.inactive.bg_fill = self.preferences.theme.text_dim();
-												ui.visuals_mut().widgets.active.bg_fill = self.preferences.theme.sound_border();
-												ui.visuals_mut().selection.bg_fill = self.preferences.theme.sound_border();
+												ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+												ui.visuals_mut().widgets.active.bg_fill = self.config.theme.sound_border();
+												ui.visuals_mut().selection.bg_fill = self.config.theme.sound_border();
 
-												ui.label(RichText::new("Background opacity").size(16.).color(self.preferences.theme.text()));
-												ui.add(Slider::new(&mut self.preferences.background_opacity, 0. ..=255.).integer().show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+												ui.label(RichText::new("Background opacity").size(16.).color(self.config.theme.text()));
+												ui.add(Slider::new(&mut self.config.background_opacity, 0. ..=255.).integer().show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
 											});
 										});
 									});
@@ -804,11 +821,11 @@ impl App {
 									eframe::egui::Frame::NONE.inner_margin(8.).show(ui, |ui| {
 										ui.vertical(|ui| {
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Output device:").color(self.preferences.theme.text()).size(16.));
+												ui.label(RichText::new("Output device:").color(self.config.theme.text()).size(16.));
 												egui::ComboBox::from_id_salt("output-devices")
-												.selected_text(self.preferences.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
+												.selected_text(self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
 												.show_ui(ui, |ui| {
-													for device in AudioPlayer::output_devices() {
+													for device in AudioManager::output_devices() {
 														ui.label(device.description().unwrap().extended().join(", "));
 													}
 												});
@@ -818,15 +835,15 @@ impl App {
 												RichText::new(
 													"Set this to your headphones or speaker."
 												)
-												.color(self.preferences.theme.text_dim()),
+												.color(self.config.theme.text_dim()),
 											);
 											ui.add_space(20.);
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Input device:").color(self.preferences.theme.text()).size(16.));
+												ui.label(RichText::new("Input device:").color(self.config.theme.text()).size(16.));
 												egui::ComboBox::new("input-devices", "")
-												.selected_text(self.preferences.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
+												.selected_text(self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
 												.show_ui(ui, |ui| {
-													for device in AudioPlayer::input_devices() {
+													for device in AudioManager::input_devices() {
 														ui.label(device.description().unwrap().extended().join(", "));
 													}
 												});
@@ -838,17 +855,17 @@ impl App {
 												RichText::new(
 													"Set this to your microphone device."
 												)
-												.color(self.preferences.theme.text_dim()),
+												.color(self.config.theme.text_dim()),
 											);
 
 											ui.add_space(20.);
 
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Virtual cable device:").color(self.preferences.theme.text()).size(16.));
+												ui.label(RichText::new("Virtual cable device:").color(self.config.theme.text()).size(16.));
 												egui::ComboBox::new("vb-cable-device", "")
-												.selected_text(self.preferences.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()).show_ui(ui, |ui| {
-													for device in AudioPlayer::output_devices() {
-														ui.add(Button::new(RichText::new(device.description().unwrap().extended().join(", ")).color(self.preferences.theme.text())).fill(Color32::from_hex("#11111b").unwrap()).stroke(Stroke::NONE));
+												.selected_text(self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()).show_ui(ui, |ui| {
+													for device in AudioManager::output_devices() {
+														ui.add(Button::new(RichText::new(device.description().unwrap().extended().join(", ")).color(self.config.theme.text())).fill(Color32::from_hex("#11111b").unwrap()).stroke(Stroke::NONE));
 													}
 												});
 											});
@@ -859,18 +876,18 @@ impl App {
 												RichText::new(
 													"This is a virtual device that comes installed with Zackophany that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set this as the input device in your chat app (discord, teams, etc.) for others to be able to hear your sound effects.",
 												)
-												.color(self.preferences.theme.text_dim()),
+												.color(self.config.theme.text_dim()),
 											);
 										});
 									});
 								},
-								SettingsTab::Sounds => {
+								SettingsTab::Sounds(id) => {
 									ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
 									ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
 									ui.horizontal(|ui| {
 										ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Max), |ui| {
 											ui.vertical(|ui| {
-												let sb = &self.preferences.soundboard;
+												let sb = &self.config.soundboard;
 												let nodes = sb.pages[self.page].sounds.clone();
 
 												for sound_node in nodes {
@@ -881,20 +898,57 @@ impl App {
 
 										ui.separator();
 
-										div().inner_margin(8.).show(ui, |ui| {
-											ui.vertical(|ui| {
-												ui.horizontal(|ui| {
-													ui.label(RichText::new(format!(" {}   Sound Properties", icons::SPEAKER_HIGH)).size(16.).color(self.preferences.theme.text_bright()));
-													ui.add_space(ui.available_width());
-													ui.add(Button::new(RichText::new(icons::TRASH).size(16.).color(self.preferences.theme.red())).fill(self.preferences.theme.background()).stroke(Stroke::NONE));
+										if let Some(id) = id {
+											let sound = self.config.soundboard.get_sound_mut(id);
+											if let Some(sound) = sound {
+												div().inner_margin(8.).show(ui, |ui| {
+													ui.vertical(|ui| {
+														ui.horizontal(|ui| {
+															ui.label(RichText::new(format!(" {}   Sound Properties", icons::SPEAKER_HIGH)).size(16.).color(self.config.theme.text_bright()));
+															ui.add_space(ui.available_width());
+															ui.add(Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red())).fill(self.config.theme.background()).stroke(Stroke::NONE));
+														});
+
+														ui.add_space(4.);
+														ui.separator();
+														ui.add_space(4.);
+
+														ui.horizontal(|ui| {
+															ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
+															ui.text_edit_singleline(&mut sound.name);
+														});
+
+														ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
+
+														ui.horizontal(|ui| {
+															ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+															ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+															ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.sound_border();
+
+															ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+															ui.visuals_mut().widgets.active.bg_fill = self.config.theme.sound_border();
+															ui.visuals_mut().selection.bg_fill = self.config.theme.sound_border();
+
+															ui.label(RichText::new("Volume for me:").size(16.).color(self.config.theme.text()));
+															ui.add(Slider::new(&mut sound.volume_for_me, 0 ..=100).integer().handle_shape(HandleShape::Circle).trailing_fill(true));
+														});
+
+														ui.horizontal(|ui| {
+															ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+															ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+															ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.sound_border();
+
+															ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+															ui.visuals_mut().widgets.active.bg_fill = self.config.theme.sound_border();
+															ui.visuals_mut().selection.bg_fill = self.config.theme.sound_border();
+
+															ui.label(RichText::new("Volume for others:").size(16.).color(self.config.theme.text()));
+															ui.add(Slider::new(&mut sound.volume_for_others, 0 ..=100).integer().handle_shape(HandleShape::Circle).trailing_fill(true));
+														});
+													});
 												});
-												ui.add_space(4.);
-												ui.separator();
-												ui.add_space(4.);
-												ui.label(RichText::new("Name:").size(16.).color(self.preferences.theme.text()));
-												ui.label(RichText::new("Icon:").size(16.).color(self.preferences.theme.text()));
-											});
-										});
+											}
+										}
 									});
 								},
 								SettingsTab::Support => {
@@ -905,7 +959,7 @@ impl App {
 													Label::new(
 													RichText::new("zack i made the fucking app why are you looking in the support tab just text me if something isnt working you fucking idiot")
 														.size(16.)
-														.color(self.preferences.theme.text())).wrap()
+														.color(self.config.theme.text())).wrap()
 												);
 											});
 										});
@@ -926,7 +980,7 @@ impl App {
 	}
 
 	fn draw_sound_node(&mut self, ui: &mut Ui, id: Uuid) {
-		let sb = &self.preferences.soundboard;
+		let sb = &self.config.soundboard;
 		let sound_node = sb.get_sound_node(id).unwrap().clone();
 
 		ui.vertical(|ui| {
@@ -935,11 +989,19 @@ impl App {
 			} else {
 				format!("    {}", sound_node.name())
 			};
-			ui.add(
-				Button::new(RichText::new(label).color(self.preferences.theme.text()).size(16.))
-					.fill(self.preferences.theme.background())
+			let sound_button = ui.add(
+				Button::new(RichText::new(label).color(self.config.theme.text()).size(16.))
+					.fill(self.config.theme.background())
 					.stroke(Stroke::NONE),
 			);
+
+			if sound_button.hovered() {
+				ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+			}
+
+			if sound_button.clicked() {
+				self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+			}
 
 			ui.add_space(3.);
 
@@ -968,7 +1030,7 @@ impl App {
 				.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
 				.show(ui, |ui| {
 					ui.horizontal(|ui| {
-						let mut page_name = self.preferences.soundboard.pages[self.page].name.clone();
+						let mut page_name = self.config.soundboard.pages[self.page].name.clone();
 						if page_name.is_empty() {
 							page_name = format!("Page {}", self.page + 1);
 						}
@@ -999,7 +1061,7 @@ impl App {
 						ui.add_space(100.);
 
 						ui.label(
-							RichText::new(format!("{} / {}", self.page + 1, self.preferences.soundboard.pages.len()))
+							RichText::new(format!("{} / {}", self.page + 1, self.config.soundboard.pages.len()))
 								.color(Color32::from_hex("#b4befe").unwrap())
 								.size(16.),
 						);
@@ -1017,7 +1079,7 @@ impl App {
 							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
 						}
 
-						if page_right.clicked() && self.page < self.preferences.soundboard.pages.len() - 1 {
+						if page_right.clicked() && self.page < self.config.soundboard.pages.len() - 1 {
 							self.page += 1;
 						}
 					});
@@ -1057,7 +1119,7 @@ impl eframe::App for App {
 		}
 
 		if self.visible {
-			let overlay_frame = egui::Frame::NONE.fill(Color32::from_black_alpha(self.preferences.background_opacity.floor() as u8));
+			let overlay_frame = egui::Frame::NONE.fill(Color32::from_black_alpha(self.config.background_opacity.floor() as u8));
 			self.draw_screen(ui, overlay_frame);
 		}
 	}
@@ -1074,7 +1136,7 @@ pub enum UiAction {
 }
 
 impl UiAction {
-	fn run(&self, soundboard: &Soundboard, audio_player: Arc<Mutex<AudioPlayer>>, tx: &Sender<AppEvent>) {
+	fn run(&self, soundboard: &Soundboard, audio_player: Arc<Mutex<AudioManager>>, tx: &Sender<AppEvent>) {
 		match self {
 			UiAction::OpenSoundboard => {
 				let _ = tx.send(AppEvent::Show);

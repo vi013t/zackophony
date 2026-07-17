@@ -6,7 +6,6 @@ use std::{
 	time::Duration,
 };
 
-use eframe::egui::Key::W;
 use ringbuf::{
 	HeapCons,
 	HeapRb,
@@ -47,7 +46,7 @@ impl SoundData {
 	}
 }
 
-pub struct AudioPlayer {
+pub struct AudioManager {
 	cable_sink: MixerDeviceSink,
 	monitor_sink: MixerDeviceSink,
 
@@ -76,28 +75,17 @@ impl UiSound {
 	}
 }
 
-impl AudioPlayer {
-	pub fn new() -> anyhow::Result<AudioPlayer> {
-		let host = rodio::cpal::default_host();
-
-		let cable_device = host
-			.output_devices()?
-			.find(|d| d.description().is_ok_and(|d| d.name().contains("CABLE Input")))
-			.ok_or_else(|| anyhow::anyhow!("VB-CABLE not found"))?;
-
-		println!("Cable: {} Hz", cable_device.default_output_config().unwrap().sample_rate());
-
-		let monitor_device = host.default_output_device().ok_or_else(|| anyhow::anyhow!("No speakers found"))?;
-
+impl AudioManager {
+	pub fn new(input_device: Device, monitor_device: Device, cable_device: Device) -> anyhow::Result<AudioManager> {
 		let cable_sink = DeviceSinkBuilder::from_device(cable_device)?.open_stream()?;
 		let monitor_sink = DeviceSinkBuilder::from_device(monitor_device)?.open_stream()?;
 		let mic_level = Arc::new(Mutex::new(0.0));
 
-		let (mic_stream, mic_consumer) = AudioPlayer::start_microphone(mic_level.clone())?;
+		let (mic_stream, mic_consumer, sample_rate) = AudioManager::start_microphone(input_device, mic_level.clone())?;
 
 		let mic_source = MicSource {
 			consumer: mic_consumer.clone(),
-			sample_rate: 48000,
+			sample_rate,
 			last_sample: 0.0,
 			left: false,
 		};
@@ -107,7 +95,7 @@ impl AudioPlayer {
 		// uncomment this to enable mic sidetone
 		// monitor_sink.mixer().add(mic_source);
 
-		Ok(AudioPlayer {
+		Ok(AudioManager {
 			ui_sounds: HashMap::from([(UiSound::Hover, UiSound::Hover.buffered()?)]),
 			cable_sink,
 			monitor_sink,
@@ -167,12 +155,9 @@ impl AudioPlayer {
 		host.input_devices().map(|devices| devices.collect()).unwrap_or_else(|_| Vec::new())
 	}
 
-	fn start_microphone(level: Arc<Mutex<f32>>) -> anyhow::Result<(Stream, Arc<Mutex<ringbuf::HeapCons<f32>>>)> {
-		let host = rodio::cpal::default_host();
-		let microphone = host.default_input_device().ok_or_else(|| anyhow::anyhow!("No microphone"))?;
+	fn start_microphone(microphone: Device, level: Arc<Mutex<f32>>) -> anyhow::Result<(Stream, MicConsumer, u32)> {
 		let config = microphone.default_input_config()?;
-
-		println!("Mic: {} Hz, {:?}", config.sample_rate(), config.sample_format());
+		let sample_rate = config.sample_rate();
 
 		let rb = HeapRb::<f32>::new(48000);
 
@@ -189,7 +174,7 @@ impl AudioPlayer {
 
 		stream.play()?;
 
-		Ok((stream, consumer))
+		Ok((stream, consumer, sample_rate))
 	}
 
 	fn build_mic_stream<T>(microphone: &rodio::cpal::Device, config: &rodio::cpal::StreamConfig, level: Arc<Mutex<f32>>, producer: MicProducer) -> anyhow::Result<Stream>
