@@ -58,3 +58,5 @@ pub static CATPPUCCIN_MOCHA: LazyLock<Theme> = LazyLock::new(|| Theme {
 
 	red: Color32::from_hex("#f38ba8").unwrap(),
 });
+
+pub static THEMES: &[&LazyLock<Theme>] = &[&CATPPUCCIN_MOCHA];

@@ -8,6 +8,7 @@ mod theme;
 mod ui;
 
 pub const NAME: &str = "Zackophony";
+pub const VERSION: &str = "0.1.0";
 
 fn main() -> anyhow::Result<()> {
 	App::start()?;

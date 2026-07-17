@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use eframe::egui::Color32;
 use rodio::Device;
+use uuid::Uuid;
 
 use crate::{
 	audio::{AudioPlayer, SoundData},
@@ -29,6 +30,20 @@ impl SoundPage {
 			})
 			.collect()
 	}
+
+	pub fn sound_nodes(&self) -> Vec<&SoundTreeNode> {
+		self.sounds
+			.iter()
+			.flat_map(|s| match s {
+				SoundTreeNode::Sound(_) => vec![s],
+				SoundTreeNode::Group(sound_folder) => {
+					let mut rest = sound_folder.sound_nodes();
+					rest.push(s);
+					rest
+				},
+			})
+			.collect()
+	}
 }
 
 impl Soundboard {
@@ -41,25 +56,30 @@ impl Soundboard {
 						name: "grooming".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/youre_grooming_me.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::BABY.to_owned()),
+						id: Uuid::new_v4(),
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "ZERO".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/zero.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::CROSSHAIR.to_owned()),
+						id: Uuid::new_v4(),
 					}),
 					SoundTreeNode::Group(SoundGroup {
 						name: "schizophrenia".to_owned(),
-						icon: Some(egui_phosphor::regular::SMILEY_ANGRY.to_owned()),
+						icon: Some(egui_phosphor::regular::GHOST.to_owned()),
+						id: Uuid::new_v4(),
 						sounds: vec![
 							SoundTreeNode::Sound(Sound {
 								name: "skill check".to_owned(),
 								data: SoundData::new(include_bytes!("../assets/sounds/default/skill_check.mp3").to_vec())?,
 								icon: Some(egui_phosphor::regular::SKULL.to_owned()),
+								id: Uuid::new_v4(),
 							}),
 							SoundTreeNode::Sound(Sound {
 								name: "steps".to_owned(),
 								data: SoundData::new(include_bytes!("../assets/sounds/default/steps.mp3").to_vec())?,
 								icon: Some(egui_phosphor::regular::FOOTPRINTS.to_owned()),
+								id: Uuid::new_v4(),
 							}),
 						],
 					}),
@@ -67,16 +87,19 @@ impl Soundboard {
 						name: "not real".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/not_real.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::GAME_CONTROLLER.to_owned()),
+						id: Uuid::new_v4(),
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "never again".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/never_again.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::FLASHLIGHT.to_owned()),
+						id: Uuid::new_v4(),
 					}),
 					SoundTreeNode::Sound(Sound {
 						name: "this button?".to_owned(),
 						data: SoundData::new(include_bytes!("../assets/sounds/default/this_button.mp3").to_vec())?,
 						icon: Some(egui_phosphor::regular::KEYBOARD.to_owned()),
+						id: Uuid::new_v4(),
 					}),
 				],
 			}],
@@ -86,13 +109,22 @@ impl Soundboard {
 	pub fn sounds(&self) -> Vec<&Sound> {
 		self.pages.iter().flat_map(|p| p.sounds()).collect()
 	}
+
+	pub fn sound_nodes(&self) -> Vec<&SoundTreeNode> {
+		self.pages.iter().flat_map(|p| p.sound_nodes()).collect()
+	}
+
+	pub fn get_sound_node(&self, id: Uuid) -> Option<&SoundTreeNode> {
+		self.sound_nodes().iter().find(|sound| sound.id() == id).copied()
+	}
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SoundGroup {
 	pub icon: Option<String>,
 	pub sounds: Vec<SoundTreeNode>,
 	pub name: String,
+	pub id: Uuid,
 }
 
 impl SoundGroup {
@@ -105,9 +137,23 @@ impl SoundGroup {
 			})
 			.collect()
 	}
+
+	pub fn sound_nodes(&self) -> Vec<&SoundTreeNode> {
+		self.sounds
+			.iter()
+			.flat_map(|s| match s {
+				SoundTreeNode::Sound(_) => vec![s],
+				SoundTreeNode::Group(sound_folder) => {
+					let mut rest = sound_folder.sound_nodes();
+					rest.push(s);
+					rest
+				},
+			})
+			.collect()
+	}
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum SoundTreeNode {
 	Sound(Sound),
 	Group(SoundGroup),
@@ -118,6 +164,13 @@ impl SoundTreeNode {
 		match self {
 			SoundTreeNode::Sound(sound) => &sound.name,
 			SoundTreeNode::Group(sound_folder) => &sound_folder.name,
+		}
+	}
+
+	pub fn id(&self) -> Uuid {
+		match self {
+			SoundTreeNode::Sound(sound) => sound.id,
+			SoundTreeNode::Group(group) => group.id,
 		}
 	}
 
@@ -174,11 +227,20 @@ pub struct Sound {
 	pub name: String,
 	pub icon: Option<String>,
 	pub data: SoundData,
+	pub id: Uuid,
+}
+
+impl std::fmt::Debug for Sound {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "Sound {{ name: {:?}, icon: {:?}, id: {:?} }}", self.name, self.icon, self.id)
+	}
 }
 
 pub struct Preferences {
 	pub(crate) theme: &'static LazyLock<Theme>,
 	pub(crate) virtual_cable_device: Option<Device>,
+	pub(crate) input_device: Option<Device>,
+	pub(crate) output_device: Option<Device>,
 }
 
 impl Default for Preferences {
@@ -186,6 +248,8 @@ impl Default for Preferences {
 		Preferences {
 			theme: &CATPPUCCIN_MOCHA,
 			virtual_cable_device: AudioPlayer::default_virtual_device(),
+			input_device: AudioPlayer::default_input_device(),
+			output_device: AudioPlayer::default_output_device(),
 		}
 	}
 }
