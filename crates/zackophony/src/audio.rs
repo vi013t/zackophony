@@ -6,6 +6,7 @@ use std::{
 	time::Duration,
 };
 
+use eframe::egui::Key::W;
 use ringbuf::{
 	HeapCons,
 	HeapRb,
@@ -96,6 +97,8 @@ impl AudioPlayer {
 		};
 
 		cable_sink.mixer().add(mic_source.clone());
+
+		// uncomment this to enable mic sidetone
 		// monitor_sink.mixer().add(mic_source);
 
 		Ok(AudioPlayer {
@@ -134,6 +137,23 @@ impl AudioPlayer {
 	pub fn output_devices() -> Vec<Device> {
 		let host = rodio::cpal::default_host();
 		host.output_devices().map(|devices| devices.collect()).unwrap_or_else(|_| Vec::new())
+	}
+
+	pub fn default_virtual_device() -> Option<Device> {
+		let host = rodio::cpal::default_host();
+		host.output_devices()
+			.ok()
+			.and_then(|mut devices| devices.find(|d| d.description().is_ok_and(|d| d.name().contains("CABLE Input"))))
+	}
+
+	pub fn default_input_device() -> Option<Device> {
+		let host = rodio::cpal::default_host();
+		host.default_input_device()
+	}
+
+	pub fn default_output_device() -> Option<Device> {
+		let host = rodio::cpal::default_host();
+		host.default_output_device()
 	}
 
 	pub fn input_devices() -> Vec<Device> {

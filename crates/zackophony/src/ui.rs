@@ -134,6 +134,7 @@ impl App {
 				.with_decorations(false)
 				.with_always_on_top()
 				.with_visible(false)
+				.with_taskbar(false)
 				.with_maximized(true),
 			renderer: Renderer::Glow,
 			..Default::default()
@@ -457,10 +458,8 @@ impl App {
 				ui,
 				&painter,
 				node,
-				screen_center,
 				base_inner_radius,
 				base_outer_radius,
-				hover_expand,
 				button_spacing,
 				sound_item_index,
 				slice_angle,
@@ -481,10 +480,8 @@ impl App {
 						ui,
 						&painter,
 						node,
-						screen_center,
 						base_outer_radius + button_spacing * 2. + hover_expand,
 						base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2. + hover_expand,
-						hover_expand,
 						button_spacing,
 						index,
 						slice_angle_l1,
@@ -501,10 +498,8 @@ impl App {
 		ui: &mut Ui,
 		painter: &Painter,
 		sound_node: &SoundTreeNode,
-		screen_center: Pos2,
-		base_inner_radius: f32,
-		base_outer_radius: f32,
-		hover_expand: f32,
+		inner_radius: f32,
+		outer_radius: f32,
 		button_spacing: f32,
 		sound_item_index: usize,
 		slice_angle: f32,
@@ -515,15 +510,17 @@ impl App {
 
 		let stroke_width = if is_hovered { 5.0 } else { 2.0 };
 		let gap = if is_hovered { 14. } else { 12. };
+		let hover_expand = 10.0;
 
 		let fill_color = sound_node.background_color(self.preferences.theme, is_hovered);
 		let stroke_color = sound_node.border_color(self.preferences.theme, is_hovered);
 		let text_color = stroke_color;
 
 		let hover_t = ui.ctx().animate_bool(ui.id().with((level, sound_item_index)), is_hovered);
-		let current_outer_radius = base_outer_radius + (hover_expand * hover_t);
-		let current_inner_radius = base_inner_radius + (3.0 * hover_t);
+		let current_outer_radius = outer_radius + (hover_expand * hover_t);
+		let current_inner_radius = inner_radius + (3.0 * hover_t);
 
+		let screen_center = ui.ctx().viewport_rect().center();
 		let points = Self::get_wedge_polygon(screen_center, current_inner_radius, current_outer_radius, button_spacing, slice_angle, angle);
 
 		self.draw_shadow(painter, &points);
@@ -577,7 +574,7 @@ impl App {
 			let child = Rect::from_center_size(parent.center(), size);
 
 			ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-				eframe::egui::Frame::default()
+				let panel = eframe::egui::Frame::default()
 					.fill(self.preferences.theme.background())
 					.inner_margin(16.)
 					.corner_radius(8.)
@@ -737,32 +734,64 @@ impl App {
 									});
 								},
 								SettingsTab::System => {
-									ui.columns(2, |ui| {
-										ui[0].vertical(|ui| {
+							
+									ui.vertical(|ui| {
+										ui.horizontal(|ui| {
 											ui.label(RichText::new("Output device:").color(self.preferences.theme.text()).size(16.));
-											ui.add_space(4.);
+											egui::ComboBox::new("output-devices", "").show_ui(ui, |ui| {
+									ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
+									ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
+												for device in AudioPlayer::output_devices() {
+													ui.label(device.description().unwrap().extended().join(", "));
+												}
+											});
+										});
+										ui.add_space(4.);
+										ui.label(
+											RichText::new(
+												"Set this to your headphones or speaker."
+											)
+											.color(self.preferences.theme.text_dim()),
+										);
+										ui.add_space(16.);
+										ui.horizontal(|ui| {
 											ui.label(RichText::new("Input device:").color(self.preferences.theme.text()).size(16.));
-											ui.add_space(4.);
-											ui.label(RichText::new("Virtual cable device:").color(self.preferences.theme.text()).size(16.));
+											egui::ComboBox::new("input-devices", "").show_ui(ui, |ui| {
+												for device in AudioPlayer::input_devices() {
+													ui.label(device.description().unwrap().extended().join(", "));
+												}
+											});
 										});
 
-										ui[1].vertical(|ui| {
-											egui::ComboBox::new("output-devices", "").show_ui(ui, |ui| {
-												for output_device in AudioPlayer::output_devices() {
-													ui.label(output_device.description().unwrap().extended().join(", "));
-												}
-											});
-											egui::ComboBox::new("input-devices", "").show_ui(ui, |ui| {
-												for input_device in AudioPlayer::input_devices() {
-													ui.label(input_device.description().unwrap().extended().join(", "));
-												}
-											});
-											egui::ComboBox::new("vb-cable-device", "").show_ui(ui, |ui| {
-												for output_device in AudioPlayer::output_devices() {
-													ui.label(output_device.description().unwrap().extended().join(", "));
+										ui.add_space(4.);
+
+										ui.label(
+											RichText::new(
+												"Set this to your microphone device."
+											)
+											.color(self.preferences.theme.text_dim()),
+										);
+
+										ui.add_space(16.);
+
+										ui.horizontal(|ui| {
+											ui.label(RichText::new("Virtual cable device:").color(self.preferences.theme.text()).size(16.));
+											egui::ComboBox::new("vb-cable-device", "")
+											.selected_text(self.preferences.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()).show_ui(ui, |ui| {
+												for device in AudioPlayer::output_devices() {
+													ui.add(Button::new(RichText::new(device.description().unwrap().extended().join(", ")).color(self.preferences.theme.text())).fill(Color32::from_hex("#11111b").unwrap()).stroke(Stroke::NONE));
 												}
 											});
 										});
+
+										ui.add_space(4.);
+
+										ui.label(
+											RichText::new(
+												"This is a virtual device that comes installed with Zackophany that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set this as the input device in your chat app (discord, teams, etc.) for others to be able to hear your sound effects.",
+											)
+											.color(self.preferences.theme.text_dim()),
+										);
 									});
 								},
 								SettingsTab::Sounds => {},
@@ -781,6 +810,11 @@ impl App {
 
 						ui.add_space(ui.available_height());
 					});
+				// if panel.response.clicked_elsewhere() {
+				// 	self.screen = AppScreen::Soundboard;
+				// 	self.visible = false;
+				// 	ui.send_viewport_cmd(ViewportCommand::Visible(false));
+				// }
 			});
 		});
 	}
@@ -862,20 +896,20 @@ impl eframe::App for App {
 			match event {
 				AppEvent::Show => {
 					self.visible = true;
-					ui.send_viewport_cmd(ViewportCommand::Visible(true));
+					ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 				},
 				AppEvent::Toggle => {
 					if self.visible {
 						self.visible = false;
-						ui.send_viewport_cmd(ViewportCommand::Visible(false));
+						ui.send_viewport_cmd(ViewportCommand::MousePassthrough(true));
 					} else {
 						self.visible = true;
-						ui.send_viewport_cmd(ViewportCommand::Visible(true));
+						ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 					}
 				},
 				AppEvent::Hide => {
 					self.visible = false;
-					ui.send_viewport_cmd(ViewportCommand::Visible(false));
+					ui.send_viewport_cmd(ViewportCommand::MousePassthrough(true));
 				},
 			}
 		}

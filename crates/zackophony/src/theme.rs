@@ -31,6 +31,8 @@ pub struct Theme {
 	text_bright: Color32,
 	#[getter(copy)]
 	text: Color32,
+	#[getter(copy)]
+	text_dim: Color32,
 
 	#[getter(copy)]
 	red: Color32,
@@ -52,6 +54,7 @@ pub static CATPPUCCIN_MOCHA: LazyLock<Theme> = LazyLock::new(|| Theme {
 	background: Color32::from_hex("#1e1e2e").unwrap(),
 	text_bright: Color32::from_hex("#cdd6f4").unwrap(),
 	text: Color32::from_hex("#a6adc8").unwrap(),
+	text_dim: Color32::from_hex("#6c7086").unwrap(),
 
 	red: Color32::from_hex("#f38ba8").unwrap(),
 });

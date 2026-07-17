@@ -1,9 +1,10 @@
 use std::sync::LazyLock;
 
 use eframe::egui::Color32;
+use rodio::Device;
 
 use crate::{
-	audio::SoundData,
+	audio::{AudioPlayer, SoundData},
 	theme::{CATPPUCCIN_MOCHA, Theme},
 };
 
@@ -177,10 +178,14 @@ pub struct Sound {
 
 pub struct Preferences {
 	pub(crate) theme: &'static LazyLock<Theme>,
+	pub(crate) virtual_cable_device: Option<Device>,
 }
 
 impl Default for Preferences {
 	fn default() -> Self {
-		Preferences { theme: &CATPPUCCIN_MOCHA }
+		Preferences {
+			theme: &CATPPUCCIN_MOCHA,
+			virtual_cable_device: AudioPlayer::default_virtual_device(),
+		}
 	}
 }
