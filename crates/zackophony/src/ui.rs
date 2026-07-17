@@ -11,8 +11,30 @@ use std::{
 use eframe::{
 	Frame,
 	Renderer,
-	egui::{self, Button, Color32, FontDefinitions, Painter, Pos2, Rect, RichText, Shape, Stroke, Ui, Vec2, ViewportBuilder, ViewportCommand, Visuals},
+	egui::{
+		self,
+		Align,
+		Button,
+		Color32,
+		FontDefinitions,
+		Layout,
+		Painter,
+		Pos2,
+		Rect,
+		RichText,
+		Shadow,
+		Shape,
+		Stroke,
+		Ui,
+		UiBuilder,
+		Vec2,
+		ViewportBuilder,
+		ViewportCommand,
+		Visuals,
+		vec2,
+	},
 };
+use egui_phosphor::regular as icons;
 use global_hotkey::{
 	GlobalHotKeyEvent,
 	GlobalHotKeyManager,
@@ -26,12 +48,21 @@ use uuid::Uuid;
 use crate::{
 	NAME,
 	audio::{AudioPlayer, SoundData, UiSound},
-	soundboard::{RadialButton, Soundboard},
+	soundboard::{Preferences, SoundTreeNode, Soundboard},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
+enum SettingsTab {
+	Appearance,
+	Hotkeys,
+	System,
+	Sounds,
+	Support,
+}
 
 enum AppScreen {
 	Soundboard,
-	Settings,
+	Settings(SettingsTab),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
@@ -51,6 +82,7 @@ pub struct App {
 	audio_player: Arc<Mutex<AudioPlayer>>,
 	soundboard: Arc<Mutex<Soundboard>>,
 	hotkeys: Arc<Mutex<HashMap<HotKey, HotkeyAction>>>,
+	preferences: Preferences,
 
 	selected_index: Option<(usize, usize)>,
 	active_folder: Option<usize>,
@@ -79,6 +111,7 @@ impl App {
 			hotkeys: Arc::new(Mutex::new(hotkeys)),
 			screen: AppScreen::Soundboard,
 			soundboard: Arc::new(Mutex::new(soundboard)),
+			preferences: Preferences::default(),
 			audio_player: Arc::new(Mutex::new(audio_player)),
 			rx,
 			visible: false,
@@ -224,14 +257,14 @@ impl App {
 					ui.add_space(10.);
 
 					let settings_button = ui.add(
-						Button::new(RichText::new(egui_phosphor::regular::GEAR).size(25.).color(Color32::from_hex("#b4befe").unwrap()))
+						Button::new(RichText::new(icons::GEAR).size(25.).color(Color32::from_hex("#b4befe").unwrap()))
 							.min_size(Vec2::splat(50.))
 							.corner_radius(25.)
 							.fill(Color32::from_hex("#11111bcc").unwrap()),
 					);
 
 					if settings_button.clicked() {
-						self.screen = AppScreen::Settings;
+						self.screen = AppScreen::Settings(SettingsTab::Appearance);
 					}
 				});
 			});
@@ -261,17 +294,17 @@ impl App {
 
 		response.context_menu(|ui| {
 			let visuals = ui.visuals_mut();
-			visuals.window_fill = Color32::from_hex("#11111b").unwrap();
-			visuals.window_stroke = Stroke::new(1., Color32::from_hex("#b4befe").unwrap());
+			visuals.window_fill = self.preferences.theme.sound_background();
+			visuals.window_stroke = Stroke::new(1., self.preferences.theme.sound_border());
 
 			{
 				let sb = self.soundboard.lock().unwrap();
-				let index = self.right_clicked_index.unwrap_or(0); // Guard index
+				let index = self.right_clicked_index.unwrap_or(0);
 
 				if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
 					let (name, icon) = match sound_node {
-						RadialButton::Sound(sound) => (&sound.name, &sound.icon),
-						RadialButton::Folder(folder) => (&folder.name, &folder.icon),
+						SoundTreeNode::Sound(sound) => (&sound.name, &sound.icon),
+						SoundTreeNode::Group(folder) => (&folder.name, &folder.icon),
 					};
 
 					if let Some(icon) = icon {
@@ -285,27 +318,27 @@ impl App {
 			ui.separator();
 
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Rename", egui_phosphor::regular::TEXTBOX)).color(Color32::from_hex("#cdd6f4").unwrap()))
+				Button::new(RichText::new(format!(" {}   Rename", icons::TEXTBOX)).color(Color32::from_hex("#cdd6f4").unwrap()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Change icon", egui_phosphor::regular::DIAMONDS_FOUR)).color(Color32::from_hex("#cdd6f4").unwrap()))
+				Button::new(RichText::new(format!(" {}   Change icon", icons::DIAMONDS_FOUR)).color(Color32::from_hex("#cdd6f4").unwrap()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Adjust volume for me", egui_phosphor::regular::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
+				Button::new(RichText::new(format!(" {}   Adjust volume for me", icons::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Adjust volume for others", egui_phosphor::regular::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
+				Button::new(RichText::new(format!(" {}   Adjust volume for others", icons::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Move to...", egui_phosphor::regular::FOLDER)).color(Color32::from_hex("#cdd6f4").unwrap()))
+				Button::new(RichText::new(format!(" {}   Move to...", icons::FOLDER)).color(Color32::from_hex("#cdd6f4").unwrap()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
@@ -313,7 +346,7 @@ impl App {
 			ui.separator();
 
 			ui.add(
-				Button::new(RichText::new(format!(" {}   Delete", egui_phosphor::regular::TRASH)).color(Color32::from_hex("#f38ba8").unwrap()))
+				Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.preferences.theme.red()))
 					.min_size(Vec2::new(200., 25.))
 					.fill(Color32::from_hex("#11111b").unwrap()),
 			);
@@ -331,7 +364,7 @@ impl App {
 
 			// check level 1 hits first (foreground elements)
 			if let Some(folder_idx) = self.active_folder
-				&& let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx)
+				&& let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx)
 			{
 				for sub_idx in 0..folder.sounds.len() {
 					let start_angle = (folder_idx as f32 + sub_idx as f32) * slice_angle_l1;
@@ -359,7 +392,7 @@ impl App {
 					if Self::point_in_polygon(pointer_pos, &points) {
 						new_selected_index = Some((0, i));
 
-						if let RadialButton::Folder(_) = &sb.pages[self.page].sounds[i] {
+						if let SoundTreeNode::Group(_) = &sb.pages[self.page].sounds[i] {
 							new_active_folder = Some(i);
 						} else {
 							new_active_folder = None; // Reset folder if hovering a regular sound
@@ -374,7 +407,7 @@ impl App {
 			{
 				match level {
 					0 => {
-						if let RadialButton::Sound(sound) = &sb.pages[self.page].sounds[idx] {
+						if let SoundTreeNode::Sound(sound) = &sb.pages[self.page].sounds[idx] {
 							let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
 							self.visible = false;
 							ui.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -382,7 +415,7 @@ impl App {
 					},
 					1 => {
 						if let Some(folder_idx) = self.active_folder
-							&& let RadialButton::Folder(folder) = &sb.pages[self.page].sounds[folder_idx]
+							&& let SoundTreeNode::Group(folder) = &sb.pages[self.page].sounds[folder_idx]
 							&& let Some(sound) = folder.sounds.get(idx)
 						{
 							let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
@@ -413,18 +446,17 @@ impl App {
 			let (name, icon, color) = {
 				let sb = self.soundboard.lock().unwrap();
 				match &sb.pages[self.page].sounds[sound_item_index] {
-					RadialButton::Sound(sound) => (sound.name.clone(), sound.icon.clone(), Color32::from_hex("#b4befe").unwrap()),
-					RadialButton::Folder(folder) => (folder.name.clone(), folder.icon.clone(), Color32::from_hex("#b5ebe2").unwrap()),
+					SoundTreeNode::Sound(sound) => (sound.name.clone(), sound.icon.clone(), self.preferences.theme.sound_border()),
+					SoundTreeNode::Group(folder) => (folder.name.clone(), folder.icon.clone(), self.preferences.theme.sound_group_border()),
 				}
 			};
 
 			let angle = (sound_item_index as f32) * slice_angle;
+			let node = &self.soundboard.lock().unwrap().pages[self.page].sounds[sound_item_index];
 			self.draw_radial_button(
 				ui,
 				&painter,
-				&name,
-				icon.as_ref(),
-				color,
+				node,
 				screen_center,
 				base_inner_radius,
 				base_outer_radius,
@@ -440,16 +472,15 @@ impl App {
 		// level 1
 		if let Some(folder_idx) = self.active_folder {
 			let sb = self.soundboard.lock().unwrap();
-			if let Some(RadialButton::Folder(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
+			if let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
 				for index in 0..folder.sounds.len() {
 					let start_angle = (folder_idx as f32 + index as f32) * slice_angle_l1;
+					let node = &folder.sounds[index];
 
 					self.draw_radial_button(
 						ui,
 						&painter,
-						folder.sounds[index].name(),
-						folder.sounds[index].icon(),
-						Color32::from_hex("#b4befe").unwrap(),
+						node,
 						screen_center,
 						base_outer_radius + button_spacing * 2. + hover_expand,
 						base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2. + hover_expand,
@@ -469,9 +500,7 @@ impl App {
 		&self,
 		ui: &mut Ui,
 		painter: &Painter,
-		name: &str,
-		icon: Option<&String>,
-		color: Color32,
+		sound_node: &SoundTreeNode,
 		screen_center: Pos2,
 		base_inner_radius: f32,
 		base_outer_radius: f32,
@@ -485,21 +514,16 @@ impl App {
 		let is_hovered = self.selected_index == Some((level, sound_item_index));
 
 		let stroke_width = if is_hovered { 5.0 } else { 2.0 };
-		let fill_color = if is_hovered {
-			Color32::from_hex("#1e1e2e").unwrap()
-		} else {
-			Color32::from_hex("#11111bcc").unwrap()
-		};
 		let gap = if is_hovered { 14. } else { 12. };
 
-		let stroke_color = if is_hovered { Color32::from_hex("#f5c2e7").unwrap() } else { color };
-		let text_color = if is_hovered { Color32::from_hex("#f5c2e7").unwrap() } else { color };
+		let fill_color = sound_node.background_color(self.preferences.theme, is_hovered);
+		let stroke_color = sound_node.border_color(self.preferences.theme, is_hovered);
+		let text_color = stroke_color;
 
 		let hover_t = ui.ctx().animate_bool(ui.id().with((level, sound_item_index)), is_hovered);
 		let current_outer_radius = base_outer_radius + (hover_expand * hover_t);
 		let current_inner_radius = base_inner_radius + (3.0 * hover_t);
 
-		// Fetch points securely from our shared geometric algorithm
 		let points = Self::get_wedge_polygon(screen_center, current_inner_radius, current_outer_radius, button_spacing, slice_angle, angle);
 
 		self.draw_shadow(painter, &points);
@@ -510,7 +534,7 @@ impl App {
 		let mid_radius = (current_inner_radius + current_outer_radius) / 2.0;
 		let label_pos = screen_center + Vec2::new(angle.cos(), angle.sin()) * mid_radius;
 
-		if let Some(icon) = icon {
+		if let Some(icon) = sound_node.icon() {
 			painter.text(
 				label_pos - Vec2::new(0., gap),
 				egui::Align2::CENTER_CENTER,
@@ -521,7 +545,7 @@ impl App {
 			painter.text(
 				label_pos + Vec2::new(0., gap),
 				egui::Align2::CENTER_CENTER,
-				name,
+				sound_node.name(),
 				egui::FontId::proportional(12.0 + (2.0 * hover_t)),
 				text_color,
 			);
@@ -542,45 +566,222 @@ impl App {
 	fn draw_screen(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
 		match self.screen {
 			AppScreen::Soundboard => self.draw_soundboard(ui, overlay_frame),
-			AppScreen::Settings => self.draw_settings(ui, overlay_frame),
+			AppScreen::Settings(tab) => self.draw_settings(ui, overlay_frame, tab),
 		}
 	}
 
-	fn draw_settings(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+	fn draw_settings(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame, tab: SettingsTab) {
 		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
-			egui::CentralPanel::default()
-				.frame(egui::Frame::new().fill(Color32::from_hex("#1e1e2e").unwrap()))
-				.show(ui, |ui| {
-					ui.columns(2, |ui| {
-						ui[0].vertical(|ui| {
-							ui.label("Devices");
+			let parent = ui.max_rect();
+			let size = parent.size() * 0.5;
+			let child = Rect::from_center_size(parent.center(), size);
 
-							ui.label("Output device: ");
-							ui.label("Input device: ");
-							ui.label("Virtual cable device: ");
+			ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
+				eframe::egui::Frame::default()
+					.fill(self.preferences.theme.background())
+					.inner_margin(16.)
+					.corner_radius(8.)
+					.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
+					.shadow(Shadow::default())
+					.show(ui, |ui| {
+						ui.horizontal(|ui| {
+							ui.label(
+								RichText::new(format!(" {}   {NAME} Settings", icons::GEAR))
+									.size(16.)
+									.color(self.preferences.theme.text_bright()),
+							);
+							ui.add_space(ui.available_width());
+							ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
+							ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
+							let close_button = ui.add(
+								Button::new(RichText::new(icons::X).color(self.preferences.theme.red()))
+									.fill(Color32::TRANSPARENT)
+									.stroke(Stroke::NONE),
+							);
 
-							ui.label("Appearance");
+							if close_button.hovered() {
+								ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+							}
 
-							ui.label("Sound color");
-							ui.label("Folder color");
+							if close_button.clicked() {
+								self.screen = AppScreen::Soundboard;
+							}
+						});
+						ui.add_space(8.);
+						ui.visuals_mut().widgets.noninteractive.bg_stroke.color = Color32::from_hex("#585b70").unwrap();
+						ui.separator();
+						ui.add_space(8.);
 
-							ui.label("Hotkeys");
+						ui.horizontal(|ui| {
+							ui.allocate_ui_with_layout(vec2(170., ui.available_height()), Layout::top_down(Align::Max), |ui| {
+								ui.vertical(|ui| {
+									ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
+									ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
+
+									let appearance_button = ui.add(
+										Button::new(
+											RichText::new(format!(" {}   Appearance", icons::PALETTE))
+												.color(self.preferences.theme.text_bright())
+												.size(16.),
+										)
+										.fill(Color32::TRANSPARENT)
+										.stroke(Stroke::NONE),
+									);
+
+									if appearance_button.hovered() {
+										ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+									}
+
+									if appearance_button.clicked() {
+										self.screen = AppScreen::Settings(SettingsTab::Appearance);
+									}
+
+									ui.add_space(8.);
+
+									let sounds_button = ui.add(
+										Button::new(
+											RichText::new(format!(" {}   Sounds", icons::SPEAKER_HIGH))
+												.color(self.preferences.theme.text_bright())
+												.size(16.),
+										)
+										.fill(Color32::TRANSPARENT)
+										.stroke(Stroke::NONE),
+									);
+									if sounds_button.hovered() {
+										ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+									}
+
+									if sounds_button.clicked() {
+										self.screen = AppScreen::Settings(SettingsTab::Sounds);
+									}
+
+									ui.add_space(8.);
+
+									let system_button = ui.add(
+										Button::new(RichText::new(format!(" {}   System", icons::CPU)).color(self.preferences.theme.text_bright()).size(16.))
+											.fill(Color32::TRANSPARENT)
+											.stroke(Stroke::NONE),
+									);
+									if system_button.hovered() {
+										ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+									}
+
+									if system_button.clicked() {
+										self.screen = AppScreen::Settings(SettingsTab::System);
+									}
+
+									ui.add_space(8.);
+
+									let hotkeys_button = ui.add(
+										Button::new(
+											RichText::new(format!(" {}   Hotkeys", icons::KEYBOARD))
+												.color(self.preferences.theme.text_bright())
+												.size(16.),
+										)
+										.fill(Color32::TRANSPARENT)
+										.stroke(Stroke::NONE),
+									);
+
+									if hotkeys_button.hovered() {
+										ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+									}
+
+									if hotkeys_button.clicked() {
+										self.screen = AppScreen::Settings(SettingsTab::Hotkeys);
+									}
+
+									ui.add_space(8.);
+
+									let support_button = ui.add(
+										Button::new(
+											RichText::new(format!(" {}   Support", icons::QUESTION))
+												.color(self.preferences.theme.text_bright())
+												.size(16.),
+										)
+										.fill(Color32::TRANSPARENT)
+										.stroke(Stroke::NONE),
+									);
+
+									if support_button.hovered() {
+										ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+									}
+
+									if support_button.clicked() {
+										self.screen = AppScreen::Settings(SettingsTab::Support);
+									}
+
+									ui.add_space(ui.available_height());
+								});
+							});
+
+							ui.separator();
+
+							match tab {
+								SettingsTab::Appearance => {
+									ui.columns(2, |ui| {
+										ui[0].vertical(|ui| {
+											ui.label(RichText::new("Theme"));
+											ui.label(RichText::new("Overlay opacity"));
+										});
+									});
+								},
+								SettingsTab::Hotkeys => {
+									ui.vertical(|ui| {
+										for (hotkey, action) in self.hotkeys.lock().unwrap().iter() {
+											ui.horizontal(|ui| {
+												ui.label("Key");
+												ui.label(hotkey.to_string());
+												ui.label("Action");
+											});
+										}
+									});
+								},
+								SettingsTab::System => {
+									ui.columns(2, |ui| {
+										ui[0].vertical(|ui| {
+											ui.label(RichText::new("Output device:").color(self.preferences.theme.text()).size(16.));
+											ui.add_space(4.);
+											ui.label(RichText::new("Input device:").color(self.preferences.theme.text()).size(16.));
+											ui.add_space(4.);
+											ui.label(RichText::new("Virtual cable device:").color(self.preferences.theme.text()).size(16.));
+										});
+
+										ui[1].vertical(|ui| {
+											egui::ComboBox::new("output-devices", "").show_ui(ui, |ui| {
+												for output_device in AudioPlayer::output_devices() {
+													ui.label(output_device.description().unwrap().extended().join(", "));
+												}
+											});
+											egui::ComboBox::new("input-devices", "").show_ui(ui, |ui| {
+												for input_device in AudioPlayer::input_devices() {
+													ui.label(input_device.description().unwrap().extended().join(", "));
+												}
+											});
+											egui::ComboBox::new("vb-cable-device", "").show_ui(ui, |ui| {
+												for output_device in AudioPlayer::output_devices() {
+													ui.label(output_device.description().unwrap().extended().join(", "));
+												}
+											});
+										});
+									});
+								},
+								SettingsTab::Sounds => {},
+								SettingsTab::Support => {
+									ui.horizontal_wrapped(|ui| {
+										ui.label(
+											RichText::new("zack i made the fucking app why are you looking in the support tab just send me a message you fucking idiot")
+												.size(16.)
+												.color(self.preferences.theme.text()),
+										);
+									});
+									ui.add_space(ui.available_height());
+								},
+							}
 						});
 
-						ui[1].vertical(|ui| {
-							egui::ComboBox::new("output-devices", "").show_ui(ui, |ui| {
-								for output_device in AudioPlayer::output_devices() {
-									ui.label(output_device.description().unwrap().extended().join(", "));
-								}
-							});
-							egui::ComboBox::new("input-devices", "").show_ui(ui, |ui| {
-								for input_device in AudioPlayer::input_devices() {
-									ui.label(input_device.description().unwrap().extended().join(", "));
-								}
-							});
-						});
+						ui.add_space(ui.available_height());
 					});
-				});
+			});
 		});
 	}
 
@@ -605,7 +806,7 @@ impl App {
 					ui.horizontal(|ui| {
 						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
 						let page_left = ui.add(
-							Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
+							Button::new(RichText::new(icons::CARET_LEFT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
 								.fill(Color32::from_hex("#11111bcc").unwrap())
 								.min_size(Vec2::splat(30.))
 								.corner_radius(15.),
@@ -630,7 +831,7 @@ impl App {
 						ui.add_space(100.);
 
 						let page_right = ui.add(
-							Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
+							Button::new(RichText::new(icons::CARET_RIGHT).color(Color32::from_hex("#b4befe").unwrap()).size(16.))
 								.fill(Color32::from_hex("#11111bcc").unwrap())
 								.min_size(Vec2::splat(30.))
 								.corner_radius(15.),

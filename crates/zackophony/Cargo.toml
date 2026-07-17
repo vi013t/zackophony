@@ -1,11 +1,13 @@
 [package]
-name = "soundboard"
+name = "zackophony"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
+resolver = "3"
 
 [dependencies]
 anyhow = "1.0.103"
+derive-getters = "0.5.0"
 eframe = { version = "0.35.0", features = ["glow"] }
 egui-phosphor.workspace = true
 global-hotkey = "0.8.0"
@@ -14,8 +16,3 @@ rfd = "0.17.2"
 ringbuf = "0.5.1"
 rodio = "0.22.2"
 uuid = "1.24.0"
-
-[profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"

@@ -4,12 +4,13 @@ use crate::ui::App;
 
 mod audio;
 mod soundboard;
+mod theme;
 mod ui;
 
-pub const NAME: &str = "Soundboard";
+pub const NAME: &str = "Zackophony";
 
 fn main() -> anyhow::Result<()> {
-    App::start()?;
+	App::start()?;
 
-    Ok(())
+	Ok(())
 }
