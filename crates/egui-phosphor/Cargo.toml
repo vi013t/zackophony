@@ -19,7 +19,3 @@ fill = []
 
 [dev-dependencies]
 eframe = "0.34"
-
-[[example]]
-name = "multiple_variants"
-required-features = ["thin", "light", "regular", "bold", "fill"]
