@@ -76,6 +76,48 @@ impl UiSound {
 }
 
 impl AudioManager {
+	pub fn set_devices(&mut self, input_device: Device, output_device: Device, virtual_device: Device) {
+		let user_sounds = std::mem::take(&mut self.user_sounds);
+		let ui_sounds = std::mem::take(&mut self.ui_sounds);
+		*self = AudioManager::with_sounds(input_device, output_device, virtual_device, user_sounds, ui_sounds).unwrap();
+	}
+
+	fn with_sounds(
+		input_device: Device,
+		monitor_device: Device,
+		cable_device: Device,
+		user_sounds: HashMap<String, SoundData>,
+		ui_sounds: HashMap<UiSound, Buffered<Decoder<Cursor<&'static [u8]>>>>,
+	) -> anyhow::Result<AudioManager> {
+		let cable_sink = DeviceSinkBuilder::from_device(cable_device)?.open_stream()?;
+		let monitor_sink = DeviceSinkBuilder::from_device(monitor_device)?.open_stream()?;
+		let mic_level = Arc::new(Mutex::new(0.0));
+
+		let (mic_stream, mic_consumer, sample_rate) = AudioManager::start_microphone(input_device, mic_level.clone())?;
+
+		let mic_source = MicSource {
+			consumer: mic_consumer.clone(),
+			sample_rate,
+			last_sample: 0.0,
+			left: false,
+		};
+
+		cable_sink.mixer().add(mic_source.clone());
+
+		// uncomment this to enable mic sidetone
+		// monitor_sink.mixer().add(mic_source);
+
+		Ok(AudioManager {
+			ui_sounds,
+			cable_sink,
+			monitor_sink,
+			user_sounds,
+			_mic_level: mic_level,
+			_mic_stream: mic_stream,
+			_mic_consumer: mic_consumer,
+		})
+	}
+
 	pub fn new(input_device: Device, monitor_device: Device, cable_device: Device) -> anyhow::Result<AudioManager> {
 		let cable_sink = DeviceSinkBuilder::from_device(cable_device)?.open_stream()?;
 		let monitor_sink = DeviceSinkBuilder::from_device(monitor_device)?.open_stream()?;
