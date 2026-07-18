@@ -324,70 +324,6 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 		egui::Area::new("radial_menu_layer".into()).show(ui.ctx(), |ui| {
 			let area_rect = Rect::from_center_size(screen_center, Vec2::splat(max_radius * 2.2));
 			let response = ui.allocate_rect(area_rect, egui::Sense::click_and_drag());
-
-			if response.secondary_clicked() {
-				self.right_clicked_index = self.selected_index.map(|i| i.1);
-			}
-
-			response.context_menu(|ui| {
-				let visuals = ui.visuals_mut();
-				visuals.window_fill = self.config.theme.sound_background();
-				visuals.window_stroke = Stroke::new(1., self.config.theme.sound_border());
-
-				{
-					let sb = &self.config.soundboard;
-					let index = self.right_clicked_index.unwrap_or(0);
-
-					if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
-						let (name, icon) = match sound_node {
-							SoundTreeNode::Sound(sound) => (&sound.name, &sound.icon),
-							SoundTreeNode::Group(folder) => (&folder.name, &folder.icon),
-						};
-
-						if let Some(icon) = icon {
-							ui.label(RichText::new(format!(" {}   {}", icon, name)).color(Color32::from_hex("#cdd6f4").unwrap()));
-						} else {
-							ui.label(format!(" {}", name));
-						}
-					}
-				}
-
-				ui.separator();
-
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Rename", icons::TEXTBOX)).color(Color32::from_hex("#cdd6f4").unwrap()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Change icon", icons::DIAMONDS_FOUR)).color(Color32::from_hex("#cdd6f4").unwrap()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Adjust volume for me", icons::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Adjust volume for others", icons::SPEAKER_HIGH)).color(Color32::from_hex("#cdd6f4").unwrap()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Move to...", icons::FOLDER)).color(Color32::from_hex("#cdd6f4").unwrap()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-
-				ui.separator();
-
-				ui.add(
-					Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.config.theme.red()))
-						.min_size(Vec2::new(200., 25.))
-						.fill(Color32::from_hex("#11111b").unwrap()),
-				);
-			});
 			let painter = ui.painter_at(area_rect);
 
 			let slice_angle = TAU / num_items as f32;
@@ -399,7 +335,6 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 			if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
 				let sb = &self.config.soundboard;
 
-				// check level 1 hits first (foreground elements)
 				if let Some(folder_idx) = self.active_folder
 					&& let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx)
 				{
@@ -419,7 +354,6 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 					}
 				}
 
-				// check level 0 hits if not hovering a level 1 item
 				if new_selected_index.is_none() {
 					for i in 0..num_items {
 						let angle = (i as f32) * slice_angle;
@@ -465,6 +399,112 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 
 			self.selected_index = new_selected_index;
 			self.active_folder = new_active_folder;
+
+			if response.secondary_clicked() {
+				self.right_clicked_index = self.selected_index.map(|i| i.1);
+			}
+
+			if let Some(index) = self.right_clicked_index {
+				response.context_menu(|ui| {
+					let visuals = ui.visuals_mut();
+					visuals.window_fill = self.config.theme.sound_background();
+					visuals.window_stroke = Stroke::new(1., self.config.theme.sound_border());
+
+					{
+						let sb = &self.config.soundboard;
+
+						if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
+							let (name, icon) = match sound_node {
+								SoundTreeNode::Sound(sound) => (&sound.name, &sound.icon),
+								SoundTreeNode::Group(folder) => (&folder.name, &folder.icon),
+							};
+
+							if let Some(icon) = icon {
+								ui.label(RichText::new(format!(" {}   {}", icon, name)).color(Color32::from_hex("#cdd6f4").unwrap()));
+							} else {
+								ui.label(format!(" {}", name));
+							}
+						}
+					}
+
+					ui.separator();
+
+					let rename_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Rename", icons::TEXTBOX)).color(self.config.theme.text()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+					if rename_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if rename_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+
+					let change_icon_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Change icon", icons::DIAMONDS_FOUR)).color(self.config.theme.text()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+					if change_icon_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if change_icon_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+
+					let adjust_volume_for_me_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Adjust volume for me", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+					if adjust_volume_for_me_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if adjust_volume_for_me_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+
+					let adjust_volume_for_others_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Adjust volume for others", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+					if adjust_volume_for_others_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if adjust_volume_for_others_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+
+					let move_to_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Move to...", icons::FOLDER)).color(self.config.theme.text()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+					if move_to_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if move_to_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+
+					ui.separator();
+
+					let delete_button = ui.add(
+						Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.config.theme.red()))
+							.min_size(Vec2::new(200., 25.))
+							.fill(Color32::from_hex("#11111b").unwrap()),
+					);
+
+					if delete_button.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+					if delete_button.clicked() {
+						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+					}
+				});
+			}
 
 			if self.selected_index.is_some() {
 				ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -615,7 +655,7 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 			let child = Rect::from_center_size(parent.center(), size);
 
 			ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-				let panel = eframe::egui::Frame::default()
+				div()
 					.fill(self.config.theme.background())
 					.inner_margin(16.)
 					.corner_radius(8.)
@@ -664,11 +704,6 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 
 						ui.add_space(ui.available_height());
 					});
-				// if panel.response.clicked_elsewhere() {
-				// 	self.screen = AppScreen::Soundboard;
-				// 	self.visible = false;
-				// 	ui.send_viewport_cmd(ViewportCommand::Visible(false));
-				// }
 			});
 		});
 	}
@@ -1198,7 +1233,7 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 		});
 	}
 
-	fn draw_page_menu(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+	fn draw_page_menu(&mut self, ui: &mut Ui) {
 		egui::Area::new("page_name".into())
 			.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
 			.show(ui, |ui| {
@@ -1261,7 +1296,7 @@ fn draw_config_buttons(&mut self, ui: &mut Ui) {
 
 	fn draw_soundboard(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
 		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
-			self.draw_page_menu(ui, overlay_frame);
+			self.draw_page_menu(ui);
 			self.draw_menu(ui);
 			self.draw_config_buttons(ui);
 			self.draw_debug_info(ui);

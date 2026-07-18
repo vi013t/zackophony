@@ -1,0 +1,16 @@
+[package]
+name = "zackophony-installer"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.103"
+directories = "6.0.0"
+mslnk = "0.1.8"
+runas = "1.2.0"
+winreg = "0.56.0"
+
+[build-dependencies]
+winres = "0.1.12"
