@@ -3,15 +3,14 @@ use std::{
 	sync::{Arc, LazyLock, Mutex},
 };
 
-use eframe::egui::Color32;
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use eframe::egui::{Color32, Key, Modifiers};
 use rodio::{Device, DeviceTrait};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
 	audio::{AudioManager, SoundData},
-	keybindings::{HotkeyBehavior, Keybinding},
+	keybindings::{HotkeyBehavior, Keybinding, LocalKeybinding},
 	theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
 	ui::UiAction,
 };
@@ -48,6 +47,12 @@ impl Soundboard {
 				.map(|value| SoundPage::deserialize(&value.to_string()))
 				.collect::<Result<Vec<_>, _>>()?,
 		})
+	}
+
+	pub fn remove_sound_node(&mut self, id: Uuid) {
+		for page in &mut self.pages {
+			page.remove_sound_node(id);
+		}
 	}
 }
 
@@ -108,6 +113,16 @@ impl SoundPage {
 				.collect::<Vec<_>>()
 				.join(",\n"),
 		)
+	}
+
+	pub fn remove_sound_node(&mut self, id: Uuid) {
+		self.sounds.retain_mut(|node| match node {
+			SoundTreeNode::Sound(sound) => sound.id != id,
+			SoundTreeNode::Group(sound_group) => {
+				sound_group.remove_sound_node(id);
+				sound_group.id != id
+			},
+		});
 	}
 
 	pub fn deserialize(text: &str) -> anyhow::Result<SoundPage> {
@@ -243,6 +258,16 @@ impl SoundGroup {
 				SoundTreeNode::Group(sound_folder) => sound_folder.sounds(),
 			})
 			.collect()
+	}
+
+	pub fn remove_sound_node(&mut self, id: Uuid) {
+		self.sounds.retain_mut(|node| match node {
+			SoundTreeNode::Sound(sound) => sound.id != id,
+			SoundTreeNode::Group(sound_group) => {
+				sound_group.remove_sound_node(id);
+				sound_group.id != id
+			},
+		});
 	}
 
 	pub fn sounds_mut(&mut self) -> Vec<&mut Sound> {
@@ -550,10 +575,14 @@ impl Default for SoundboardConfig {
 		}
 
 		let hotkeys = vec![Keybinding {
-			key: HotKey::new(Some(Modifiers::SHIFT), Code::Backquote),
+			key: LocalKeybinding {
+				key: Key::Backtick,
+				modifiers: Modifiers::SHIFT,
+			},
 			behavior: HotkeyBehavior::Press,
 			action: UiAction::ToggleSoundboard,
 			global: true,
+			id: Uuid::new_v4(),
 		}];
 
 		let preferences = SoundboardConfig {

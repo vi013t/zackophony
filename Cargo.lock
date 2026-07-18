@@ -5674,7 +5674,6 @@ dependencies = [
  "eframe 0.35.0",
  "egui-phosphor",
  "global-hotkey",
- "heck",
  "image",
  "rand 0.10.2",
  "rfd",
