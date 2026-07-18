@@ -26,7 +26,7 @@ use strum_macros::EnumIter;
 use uuid::Uuid;
 
 use crate::{
-	NAME, VERSION, audio::{AudioManager, UiSound}, keybindings::HotkeyBehavior, soundboard::{SoundTreeNode, SoundboardConfig},
+	NAME, VERSION, audio::{AudioManager, UiSound}, keybindings::HotkeyBehavior, soundboard::{SoundTreeNode, SoundboardConfig}, theme::THEMES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
@@ -677,7 +677,7 @@ impl App {
 									let appearance_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Appearance", icons::PALETTE))
-												.color(self.config.theme.text_bright())
+												.color(if self.screen == AppScreen::Settings(SettingsTab::Appearance) { self.config.theme.sound_border() } else { self.config.theme.text() })
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -697,7 +697,7 @@ impl App {
 									let sounds_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Sounds", icons::SPEAKER_HIGH))
-												.color(self.config.theme.text_bright())
+												.color(if matches!(self.screen, AppScreen::Settings(SettingsTab::Sounds(_))) { self.config.theme.sound_border() } else { self.config.theme.text() })
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -714,7 +714,9 @@ impl App {
 									ui.add_space(8.);
 
 									let system_button = ui.add(
-										Button::new(RichText::new(format!(" {}   System", icons::CPU)).color(self.config.theme.text_bright()).size(16.))
+										Button::new(RichText::new(format!(" {}   System", icons::CPU))
+										.color(if self.screen == AppScreen::Settings(SettingsTab::System) { self.config.theme.sound_border() } else { self.config.theme.text() })
+										.size(16.))
 											.fill(Color32::TRANSPARENT)
 											.stroke(Stroke::NONE),
 									);
@@ -731,7 +733,7 @@ impl App {
 									let hotkeys_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Hotkeys", icons::KEYBOARD))
-												.color(self.config.theme.text_bright())
+												.color(if self.screen == AppScreen::Settings(SettingsTab::Hotkeys) { self.config.theme.sound_border() } else { self.config.theme.text() })
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -751,7 +753,7 @@ impl App {
 									let support_button = ui.add(
 										Button::new(
 											RichText::new(format!(" {}   Support", icons::QUESTION))
-												.color(self.config.theme.text_bright())
+												.color(if self.screen == AppScreen::Settings(SettingsTab::Support) { self.config.theme.sound_border() } else { self.config.theme.text() })
 												.size(16.),
 										)
 										.fill(Color32::TRANSPARENT)
@@ -777,7 +779,22 @@ impl App {
 									div().inner_margin(8.).show(ui, |ui| {
 										ui.columns(2, |ui| {
 											ui[0].vertical(|ui| {
-												ui.label(RichText::new("Theme"));
+												ui.horizontal(|ui| {
+													ui.label(RichText::new("Theme").color(self.config.theme.text()).size(16.));
+													ComboBox::from_id_salt("themes")
+														.selected_text(RichText::new(self.config.theme.name()).size(16.).color(self.config.theme.text()))
+														.show_ui(ui, |ui| {
+															for theme in THEMES {
+																let button = ui.add(Button::new(RichText::new(theme.name()).color(self.config.theme.sound_border()).size(16.)));
+
+																if button.clicked() {
+																	self.config.theme = theme;
+																}
+															}
+														});
+												});
+
+												ui.add_space(4.);
 												ui.horizontal(|ui| {
 													ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
 													ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
@@ -802,7 +819,9 @@ impl App {
 												ui.separator();
 												ui.add_space(4.);
 												for keybinding in self.config.keybindings.lock().unwrap().iter() {
-													ui.add(Button::new(
+													ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+													ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+													ui.add_sized(vec2(ui.available_width(), 28.), Button::new(
 														RichText::new(
 															format!("{} + {}",
 															keybinding
@@ -822,6 +841,9 @@ impl App {
 												ui.separator();
 												ui.add_space(4.);
 												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+													ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+													ui.spacing_mut().interact_size.y = 28.;
 													ComboBox::from_id_salt("hotkey-action")
 														.selected_text(RichText::new(keybinding.action.name()).size(16.).color(self.config.theme.text()))
 														.width(ui.available_width())
@@ -846,6 +868,9 @@ impl App {
 												ui.separator();
 												ui.add_space(4.);
 												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+													ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+													ui.spacing_mut().interact_size.y = 28.;
 													ComboBox::from_id_salt("hotkey-behavior")
 														.selected_text(RichText::new(keybinding.behavior.name()).size(16.).color(self.config.theme.text()))
 														.width(ui.available_width())
@@ -870,6 +895,9 @@ impl App {
 												ui.separator();
 												ui.add_space(4.);
 												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+													ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+													ui.spacing_mut().interact_size.y = 28.;
 													ComboBox::from_id_salt("hotkey-arguments")
 														.selected_text(RichText::new(keybinding.behavior.name()).size(16.).color(self.config.theme.text()))
 														.width(ui.available_width())
@@ -904,14 +932,19 @@ impl App {
 									div().inner_margin(8.).show(ui, |ui| {
 										ui.vertical(|ui| {
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Output device:").color(self.config.theme.text()).size(16.));
+												ui.label(RichText::new(format!(" {}   Output device:", icons::HEADSET)).color(self.config.theme.text()).size(16.));
+
+												ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+												ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+												ui.spacing_mut().interact_size.y = 28.;
+
 												egui::ComboBox::from_id_salt("output-devices")
-												.selected_text(self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
-												.show_ui(ui, |ui| {
-													for device in AudioManager::output_devices() {
-														ui.label(device.description().unwrap().extended().join(", "));
-													}
-												});
+													.selected_text(format!("   {}   ", self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()))
+													.show_ui(ui, |ui| {
+														for device in AudioManager::output_devices() {
+															ui.label(device.description().unwrap().extended().join(", "));
+														}
+													});
 											});
 											ui.add_space(4.);
 											ui.label(
@@ -922,9 +955,12 @@ impl App {
 											);
 											ui.add_space(20.);
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Input device:").color(self.config.theme.text()).size(16.));
+												ui.label(RichText::new(format!(" {}   Input device:", icons::MICROPHONE)).color(self.config.theme.text()).size(16.));
+												ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+												ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+												ui.spacing_mut().interact_size.y = 28.;
 												egui::ComboBox::new("input-devices", "")
-												.selected_text(self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())
+												.selected_text(format!("   {}   ", self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()))
 												.show_ui(ui, |ui| {
 													for device in AudioManager::input_devices() {
 														ui.label(device.description().unwrap().extended().join(", "));
@@ -944,9 +980,12 @@ impl App {
 											ui.add_space(20.);
 
 											ui.horizontal(|ui| {
-												ui.label(RichText::new("Virtual cable device:").color(self.config.theme.text()).size(16.));
+												ui.label(RichText::new(format!(" {}   Virtual cable device:", icons::PLUGS)).color(self.config.theme.text()).size(16.));
+												ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::from_hex("#181825").unwrap();
+												ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+												ui.spacing_mut().interact_size.y = 28.;
 												egui::ComboBox::new("vb-cable-device", "")
-												.selected_text(self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()).show_ui(ui, |ui| {
+												.selected_text(format!("   {}   ", self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).show_ui(ui, |ui| {
 													for device in AudioManager::output_devices() {
 														ui.add(Button::new(RichText::new(device.description().unwrap().extended().join(", ")).color(self.config.theme.text())).fill(Color32::from_hex("#11111b").unwrap()).stroke(Stroke::NONE));
 													}
@@ -1001,7 +1040,11 @@ impl App {
 															ui.text_edit_singleline(&mut sound.name);
 														});
 
+														ui.add_space(4.);
+
 														ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
+
+														ui.add_space(4.);
 
 														ui.horizontal(|ui| {
 															ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
@@ -1015,6 +1058,8 @@ impl App {
 															ui.label(RichText::new("Volume for me:").size(16.).color(self.config.theme.text()));
 															ui.add(Slider::new(&mut sound.volume_for_me, 0 ..=100).integer().handle_shape(HandleShape::Circle).trailing_fill(true));
 														});
+
+														ui.add_space(4.);
 
 														ui.horizontal(|ui| {
 															ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();

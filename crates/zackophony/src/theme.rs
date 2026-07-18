@@ -39,7 +39,7 @@ pub struct Theme {
 }
 
 pub static CATPPUCCIN_MOCHA: LazyLock<Theme> = LazyLock::new(|| Theme {
-	name: "Catppuccin Mocha".to_owned(),
+	name: "Mocha".to_owned(),
 
 	sound_border: Color32::from_hex("#b4befe").unwrap(),
 	sound_background: Color32::from_hex("#11111bcc").unwrap(),
