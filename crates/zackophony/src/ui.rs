@@ -127,10 +127,10 @@ pub struct App {
 	recording_keybinding: Option<Uuid>,
 	is_recording: Arc<AtomicBool>,
 
-	selected_index: Option<(usize, usize)>,
-	active_folder: Option<usize>,
-	last_index: Option<(usize, usize)>,
-	right_clicked_index: Option<usize>,
+	hovered_path: Option<Vec<usize>>,
+	active_path: Vec<usize>,
+	last_hovered_path: Option<Vec<usize>>,
+	right_clicked_id: Option<Uuid>,
 	page: usize,
 }
 
@@ -166,13 +166,13 @@ impl App {
 			rng,
 			rx,
 			visible: false,
-			last_index: None,
 			popup: None,
-			selected_index: None,
 			recording_keybinding: None,
 			is_recording: Arc::new(AtomicBool::new(false)),
-			active_folder: None,
-			right_clicked_index: None,
+			last_hovered_path: None,
+			hovered_path: None,
+			active_path: Vec::new(),
+			right_clicked_id: None,
 			page: 0,
 		})
 	}
@@ -181,13 +181,21 @@ impl App {
 		self.visible = false;
 		self.screen = AppScreen::Soundboard;
 		ui.send_viewport_cmd(ViewportCommand::MousePassthrough(true));
+
+		self.hovered_path = None;
+		self.active_path = Vec::new();
+		self.right_clicked_id = None;
+
+		// generate a new cute message :D
 		let mut cute_message = random_cute_message(&mut self.rng);
 		while cute_message == self.cute_message {
 			cute_message = random_cute_message(&mut self.rng);
 		}
 		self.cute_message = cute_message;
+
 		self.is_recording.store(false, Ordering::Relaxed);
 		self.recording_keybinding = None;
+
 		let _ = self.config.save_to_disk();
 	}
 
@@ -423,9 +431,10 @@ impl App {
 														let _ = self.config.save_to_disk();
 													},
 													AppScreen::Soundboard => {
-														let sound = &self.config.soundboard.pages[self.page].sounds[*self.right_clicked_index.as_ref().unwrap()];
-														self.config.soundboard.remove_sound_node(sound.id());
-														let _ = self.config.save_to_disk();
+														if let Some(id) = self.right_clicked_id {
+															self.config.soundboard.remove_sound_node(id);
+															let _ = self.config.save_to_disk();
+														}
 													},
 													_ => {},
 												}
@@ -446,13 +455,7 @@ impl App {
 	}
 
 	fn draw_menu(&mut self, ui: &mut Ui) {
-		let base_outer_radius = 150.0;
-		let base_inner_radius = 60.0;
-		let hover_expand = 10.0;
-		let button_spacing = 8.0;
-
 		let num_items = self.config.soundboard.pages[self.page].sounds.len();
-
 		if num_items == 0 {
 			return;
 		}
@@ -460,260 +463,302 @@ impl App {
 		let screen_center = ui.ctx().viewport_rect().center();
 		let max_radius = 9999999999.;
 
+		// Create deferred action variables at the top
+		let mut sound_to_play: Option<String> = None;
+		let mut should_hide = false;
+
 		egui::Area::new("radial_menu_layer".into()).show(ui.ctx(), |ui| {
 			let area_rect = Rect::from_center_size(screen_center, Vec2::splat(max_radius * 2.2));
 			let response = ui.allocate_rect(area_rect, egui::Sense::click_and_drag());
 			let painter = ui.painter_at(area_rect);
 
-			let slice_angle = TAU / num_items as f32;
-			let slice_angle_l1 = 0.7;
+			// 1. Traverse current active_path to figure out which rings are open
+			let mut rings = Vec::new();
+			let root_nodes = &self.config.soundboard.pages[self.page].sounds;
+			rings.push((0, root_nodes, 0.0, TAU / root_nodes.len().max(1) as f32, Vec::new()));
 
-			let mut new_selected_index = None;
-			let mut new_active_folder = self.active_folder;
+			let mut current_nodes = root_nodes;
+			let mut current_parent_angle = 0.0;
+			let mut current_path = Vec::new();
 
+			for (level, &idx) in self.active_path.iter().enumerate() {
+				let slice_angle = if level == 0 { TAU / current_nodes.len().max(1) as f32 } else { 0.7 };
+
+				let center_angle = if level == 0 {
+					idx as f32 * slice_angle
+				} else {
+					let offset = (current_nodes.len() as f32 - 1.0) / 2.0 * 0.7;
+					current_parent_angle + idx as f32 * 0.7 - offset
+				};
+
+				if let Some(SoundTreeNode::Group(group)) = current_nodes.get(idx) {
+					current_nodes = &group.sounds;
+					current_parent_angle = center_angle;
+					current_path.push(idx);
+					rings.push((level + 1, current_nodes, current_parent_angle, 0.7, current_path.clone()));
+				} else {
+					break;
+				}
+			}
+
+			let mut new_hovered_path = None;
+			let mut new_active_path = self.active_path.clone();
+
+			// 2. Hit-Test rings from the outside-in (Reverse order)
 			if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-				let sb = &self.config.soundboard;
+				for (level, nodes, parent_angle, slice_angle, path_prefix) in rings.iter().rev() {
+					let (inner_r, outer_r) = App::get_ring_radii(*level);
+					let button_spacing = 8.0;
 
-				if let Some(folder_idx) = self.active_folder
-					&& let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx)
-				{
-					for sub_idx in 0..folder.sounds.len() {
-						let start_angle = (folder_idx as f32 + sub_idx as f32) * slice_angle_l1;
-						let angle_l1 = start_angle + slice_angle_l1 / 2.0;
+					for (idx, _node) in nodes.iter().enumerate() {
+						let center_angle = if *level == 0 {
+							idx as f32 * slice_angle
+						} else {
+							let offset = (nodes.len() as f32 - 1.0) / 2.0 * slice_angle;
+							parent_angle + idx as f32 * slice_angle - offset
+						};
 
-						let inner_r = base_outer_radius + button_spacing * 2.0 + hover_expand;
-						let outer_r = base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2.0 + hover_expand;
-
-						let points = Self::get_wedge_polygon(screen_center, inner_r, outer_r, button_spacing, slice_angle_l1, angle_l1);
+						let points = Self::get_wedge_polygon(screen_center, inner_r, outer_r, button_spacing, *slice_angle, center_angle);
 
 						if Self::point_in_polygon(pointer_pos, &points) {
-							new_selected_index = Some((1, sub_idx));
+							let mut full_path = path_prefix.clone();
+							full_path.push(idx);
+							new_hovered_path = Some(full_path);
 							break;
 						}
 					}
-				}
-
-				if new_selected_index.is_none() {
-					for i in 0..num_items {
-						let angle = (i as f32) * slice_angle;
-
-						let points = Self::get_wedge_polygon(screen_center, base_inner_radius, base_outer_radius, button_spacing, slice_angle, angle);
-
-						if Self::point_in_polygon(pointer_pos, &points) {
-							new_selected_index = Some((0, i));
-
-							if let SoundTreeNode::Group(_) = &sb.pages[self.page].sounds[i] {
-								new_active_folder = Some(i);
-							} else {
-								new_active_folder = None;
-							}
-							break;
-						}
+					if new_hovered_path.is_some() {
+						break;
 					}
 				}
 
-				if response.clicked()
-					&& let Some((level, idx)) = new_selected_index
-				{
-					match level {
-						0 => {
-							if let SoundTreeNode::Sound(sound) = &sb.pages[self.page].sounds[idx] {
-								let _ = self.audio_player.lock().unwrap().play_user_sound(&sound.name);
-								self.hide(ui);
+				// If hovering over something, derive how deep the active folders remain open
+				if let Some(path) = &new_hovered_path {
+					let mut current = &self.config.soundboard.pages[self.page].sounds;
+					let mut is_group = false;
+					for (i, &p) in path.iter().enumerate() {
+						if let Some(node) = current.get(p) {
+							if i == path.len() - 1 {
+								is_group = matches!(node, SoundTreeNode::Group(_));
 							}
-						},
-						1 => {
-							if let Some(folder_idx) = self.active_folder
-								&& let SoundTreeNode::Group(folder) = &sb.pages[self.page].sounds[folder_idx]
-								&& let Some(sound) = folder.sounds.get(idx)
-							{
-								let _ = self.audio_player.lock().unwrap().play_user_sound(sound.name());
-								self.hide(ui);
+							if let SoundTreeNode::Group(g) = node {
+								current = &g.sounds;
 							}
-						},
-						_ => {},
+						}
+					}
+
+					if is_group {
+						new_active_path = path.clone();
+					} else {
+						let mut parent_path = path.clone();
+						parent_path.pop();
+						new_active_path = parent_path;
 					}
 				}
 			}
 
-			self.selected_index = new_selected_index;
-			self.active_folder = new_active_folder;
+			// 3. Handle Click Action (Deferred to avoid borrow conflicts)
+			if response.clicked()
+				&& let Some(path) = &new_hovered_path
+			{
+				let mut current = &self.config.soundboard.pages[self.page].sounds;
+				let mut clicked_sound = None;
+				for (i, &p) in path.iter().enumerate() {
+					if let Some(node) = current.get(p) {
+						if i == path.len() - 1
+							&& let SoundTreeNode::Sound(sound) = node
+						{
+							clicked_sound = Some(sound.clone());
+						}
+						if let SoundTreeNode::Group(g) = node {
+							current = &g.sounds;
+						}
+					}
+				}
 
+				if let Some(sound) = clicked_sound {
+					sound_to_play = Some(sound.name);
+					should_hide = true;
+				}
+			}
+
+			// 4. Handle Right Click Action
 			if response.secondary_clicked() {
-				self.right_clicked_index = self.selected_index.map(|i| i.1);
+				if let Some(path) = &new_hovered_path {
+					let mut current = &self.config.soundboard.pages[self.page].sounds;
+					let mut right_clicked = None;
+					for (i, &p) in path.iter().enumerate() {
+						if let Some(node) = current.get(p) {
+							if i == path.len() - 1 {
+								right_clicked = Some(node.id());
+							}
+							if let SoundTreeNode::Group(g) = node {
+								current = &g.sounds;
+							}
+						}
+					}
+					self.right_clicked_id = right_clicked;
+				} else {
+					self.right_clicked_id = None;
+				}
 			}
 
-			if let Some(index) = self.right_clicked_index {
+			// Sync interactions to state
+			self.hovered_path = new_hovered_path;
+			self.active_path = new_active_path;
+
+			if self.hovered_path.is_some() {
+				ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+				if self.hovered_path != self.last_hovered_path {
+					let _ = self.audio_player.lock().unwrap().play_ui_sound(UiSound::Hover);
+				}
+			}
+			self.last_hovered_path = self.hovered_path.clone();
+
+			// 5. Draw Context Menu (using right_clicked_id)
+			if let Some(id) = self.right_clicked_id {
 				response.context_menu(|ui| {
 					let visuals = ui.visuals_mut();
 					visuals.window_fill = self.config.theme.sound_background();
 					visuals.window_stroke = Stroke::new(1., self.config.theme.sound_border());
 
-					{
-						let sb = &self.config.soundboard;
+					if let Some(sound_node) = self.config.soundboard.get_sound_node(id) {
+						let (name, icon) = match sound_node {
+							SoundTreeNode::Sound(sound) => (&sound.name, &sound.icon),
+							SoundTreeNode::Group(folder) => (&folder.name, &folder.icon),
+						};
 
-						if let Some(sound_node) = sb.pages[self.page].sounds.get(index) {
-							let (name, icon) = match sound_node {
-								SoundTreeNode::Sound(sound) => (&sound.name, &sound.icon),
-								SoundTreeNode::Group(folder) => (&folder.name, &folder.icon),
-							};
-
-							if let Some(icon) = icon {
-								ui.label(RichText::new(format!(" {}   {}", icon, name)).color(self.config.theme.text_bright()));
-							} else {
-								ui.label(format!(" {}", name));
-							}
+						if let Some(icon) = icon {
+							ui.label(RichText::new(format!(" {}   {}", icon, name)).color(Color32::from_hex("#cdd6f4").unwrap()));
+						} else {
+							ui.label(format!(" {}", name));
 						}
-					}
 
-					ui.separator();
+						ui.separator();
 
-					let rename_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Rename", icons::TEXTBOX)).color(self.config.theme.text()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(self.config.theme.background_dark()),
-					);
-					if rename_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if rename_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
-					}
+						let rename_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Rename", icons::TEXTBOX)).color(self.config.theme.text()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if rename_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if rename_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 
-					let change_icon_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Change icon", icons::DIAMONDS_FOUR)).color(self.config.theme.text()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(self.config.theme.background_dark()),
-					);
-					if change_icon_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if change_icon_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
-					}
+						let change_icon_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Change icon", icons::DIAMONDS_FOUR)).color(self.config.theme.text()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if change_icon_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if change_icon_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 
-					let adjust_volume_for_me_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Adjust volume for me", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(self.config.theme.background_dark()),
-					);
-					if adjust_volume_for_me_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if adjust_volume_for_me_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
-					}
+						let adjust_volume_for_me_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Adjust volume for me", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if adjust_volume_for_me_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if adjust_volume_for_me_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 
-					let adjust_volume_for_others_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Adjust volume for others", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(Color32::from_hex("#11111b").unwrap()),
-					);
-					if adjust_volume_for_others_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if adjust_volume_for_others_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
-					}
+						let adjust_volume_for_others_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Adjust volume for others", icons::SPEAKER_HIGH)).color(self.config.theme.text()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if adjust_volume_for_others_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if adjust_volume_for_others_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 
-					let move_to_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Move to...", icons::FOLDER)).color(self.config.theme.text()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(self.config.theme.background_dark()),
-					);
-					if move_to_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if move_to_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
-					}
+						let move_to_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Move to...", icons::FOLDER)).color(self.config.theme.text()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if move_to_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if move_to_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 
-					ui.separator();
+						ui.separator();
 
-					let delete_button = ui.add(
-						Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.config.theme.red()))
-							.min_size(Vec2::new(200., 25.))
-							.fill(self.config.theme.background_dark()),
-					);
-
-					if delete_button.hovered() {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-					if delete_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(self.config.soundboard.pages[self.page].sounds[index].id())));
+						let delete_button = ui.add(
+							Button::new(RichText::new(format!(" {}   Delete", icons::TRASH)).color(self.config.theme.red()))
+								.min_size(Vec2::new(200., 25.))
+								.fill(Color32::from_hex("#11111b").unwrap()),
+						);
+						if delete_button.hovered() {
+							ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
+						if delete_button.clicked() {
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						}
 					}
 				});
 			}
 
-			if self.selected_index.is_some() {
-				ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+			// 6. Final Pass: Paint Active Rings
+			for (level, nodes, parent_angle, slice_angle, path_prefix) in &rings {
+				let (inner_r, outer_r) = App::get_ring_radii(*level);
+				let button_spacing = 8.0;
 
-				if self.selected_index != self.last_index {
-					let _ = self.audio_player.lock().unwrap().play_ui_sound(UiSound::Hover);
-				}
-			}
+				for (idx, node) in nodes.iter().enumerate() {
+					let center_angle = if *level == 0 {
+						idx as f32 * slice_angle
+					} else {
+						let offset = (nodes.len() as f32 - 1.0) / 2.0 * slice_angle;
+						parent_angle + idx as f32 * slice_angle - offset
+					};
 
-			self.last_index = self.selected_index;
+					let mut full_path = path_prefix.clone();
+					full_path.push(idx);
 
-			// inner level
-			for sound_item_index in 0..num_items {
-				let center_angle = (sound_item_index as f32) * slice_angle;
-				let node = &self.config.soundboard.pages[self.page].sounds[sound_item_index];
-				self.draw_radial_button(
-					ui,
-					&painter,
-					node,
-					base_inner_radius,
-					base_outer_radius,
-					button_spacing,
-					sound_item_index,
-					slice_angle,
-					center_angle,
-					0,
-				);
+					self.draw_radial_button(ui, &painter, node, inner_r, outer_r, button_spacing, &full_path, *slice_angle, center_angle);
 
-				if matches!(node, SoundTreeNode::Group(_)) && self.selected_index.is_none_or(|(level, index)| level != 0 || index != sound_item_index) {
-					let angle = center_angle;
-					let radius = base_outer_radius + 15.;
-					let x = radius * angle.cos();
-					let y = radius * angle.sin();
+					if matches!(node, SoundTreeNode::Group(_)) {
+						let is_expanded = self.active_path.starts_with(&full_path);
+						if !is_expanded {
+							let angle = center_angle;
+							let radius = outer_r + 15.0;
+							let x = radius * angle.cos();
+							let y = radius * angle.sin();
 
-					let origin = screen_center + vec2(x, y);
-					let size = 15.;
-					let points = [origin, Pos2::new(origin.x + size, origin.y), Pos2::new(origin.x, origin.y + size)];
-					let rotated = rotate_triangle_around_centroid(points, angle + 3. / 8. * TAU);
-					painter.add(Shape::convex_polygon(rotated, self.config.theme.sound_group_border(), Stroke::new(2.0, Color32::BLACK)));
-				}
-			}
-
-			// outer level
-			if let Some(folder_idx) = self.active_folder {
-				let sb = &self.config.soundboard;
-				if let Some(SoundTreeNode::Group(folder)) = sb.pages[self.page].sounds.get(folder_idx) {
-					for index in 0..folder.sounds.len() {
-						let centering_offset = (folder.sounds.len() as f32 - 1.) / 2. * slice_angle_l1;
-						let center_angle = folder_idx as f32 * slice_angle + index as f32 * slice_angle_l1 - centering_offset;
-						let node = &folder.sounds[index];
-
-						self.draw_radial_button(
-							ui,
-							&painter,
-							node,
-							base_outer_radius + button_spacing * 2. + hover_expand,
-							base_outer_radius + (base_outer_radius - base_inner_radius) + button_spacing * 2. + hover_expand,
-							button_spacing,
-							index,
-							slice_angle_l1,
-							center_angle,
-							1,
-						);
+							let origin = screen_center + vec2(x, y);
+							let size = 15.0;
+							let points = [origin, Pos2::new(origin.x + size, origin.y), Pos2::new(origin.x, origin.y + size)];
+							let rotated = rotate_triangle_around_centroid(points, angle + 3.0 / 8.0 * TAU);
+							painter.add(Shape::convex_polygon(rotated, self.config.theme.sound_group_border(), Stroke::new(2.0, Color32::BLACK)));
+						}
 					}
 				}
 			}
 		});
+
+		if let Some(sound_name) = sound_to_play {
+			let _ = self.audio_player.lock().unwrap().play_user_sound(&sound_name);
+		}
+		if should_hide {
+			self.hide(ui);
+		}
 	}
 
-	#[allow(clippy::too_many_arguments, reason = "yeah i just dont really have a better way to do this")]
+	#[allow(clippy::too_many_arguments, reason = "shrug lgtm")]
 	fn draw_radial_button(
 		&self,
 		ui: &mut Ui,
@@ -722,12 +767,11 @@ impl App {
 		inner_radius: f32,
 		outer_radius: f32,
 		button_spacing: f32,
-		sound_item_index: usize,
+		path: &[usize],
 		slice_angle: f32,
 		center_angle: f32,
-		level: usize,
 	) {
-		let is_hovered = self.selected_index == Some((level, sound_item_index));
+		let is_hovered = self.hovered_path.as_deref() == Some(path);
 
 		let stroke_width = if is_hovered { 5.0 } else { 2.0 };
 		let gap = if is_hovered { 14. } else { 12. };
@@ -737,7 +781,8 @@ impl App {
 		let stroke_color = sound_node.border_color(self.config.theme, is_hovered);
 		let text_color = stroke_color;
 
-		let hover_t = ui.ctx().animate_bool(ui.id().with((level, sound_item_index)), is_hovered);
+		// Path works naturally with egui's hashing logic to maintain specific IDs
+		let hover_t = ui.ctx().animate_bool(ui.id().with(path), is_hovered);
 		let current_outer_radius = outer_radius + (hover_expand * hover_t);
 		let current_inner_radius = inner_radius + (3.0 * hover_t);
 
@@ -1585,6 +1630,22 @@ impl App {
 		}
 
 		result
+	}
+
+	fn get_ring_radii(level: usize) -> (f32, f32) {
+		let base_inner_radius = 60.0;
+		let base_outer_radius = 150.0;
+		let button_spacing = 8.0;
+		let hover_expand = 10.0;
+		let ring_thickness = base_outer_radius - base_inner_radius;
+
+		if level == 0 {
+			(base_inner_radius, base_outer_radius)
+		} else {
+			let inner_radius = base_outer_radius + (level as f32) * (button_spacing * 2.0 + hover_expand) + (level as f32 - 1.0) * ring_thickness;
+			let outer_radius = inner_radius + ring_thickness;
+			(inner_radius, outer_radius)
+		}
 	}
 }
 
