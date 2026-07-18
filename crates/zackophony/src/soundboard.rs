@@ -1,4 +1,5 @@
 use std::{
+	collections::HashMap,
 	str::FromStr,
 	sync::{Arc, LazyLock, Mutex},
 };
@@ -10,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
 	audio::{AudioManager, SoundData},
-	keybindings::{HotkeyBehavior, Keybinding, LocalKeybinding},
+	keybindings::{HotkeyBehavior, Keybinding, KeybindingArgumentValue, LocalKeybinding},
 	theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
 	ui::UiAction,
 };
@@ -574,16 +575,91 @@ impl Default for SoundboardConfig {
 			};
 		}
 
-		let hotkeys = vec![Keybinding {
-			key: LocalKeybinding {
-				key: Key::Backtick,
-				modifiers: Modifiers::SHIFT,
+		let soundboard = Soundboard::new().unwrap();
+
+		let hotkeys = vec![
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Backtick,
+					modifiers: Modifiers::SHIFT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::ToggleSoundboard,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::new(),
 			},
-			behavior: HotkeyBehavior::Press,
-			action: UiAction::ToggleSoundboard,
-			global: true,
-			id: Uuid::new_v4(),
-		}];
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Num1,
+					modifiers: Modifiers::CTRL | Modifiers::ALT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::PlaySound,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::from([(
+					"Sound".to_owned(),
+					KeybindingArgumentValue::Uuid(soundboard.sounds().iter().find(|s| s.name == "grooming").unwrap().id),
+				)]),
+			},
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Num2,
+					modifiers: Modifiers::CTRL | Modifiers::ALT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::PlaySound,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::from([(
+					"Sound".to_owned(),
+					KeybindingArgumentValue::Uuid(soundboard.sounds().iter().find(|s| s.name == "ZERO").unwrap().id),
+				)]),
+			},
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Num3,
+					modifiers: Modifiers::CTRL | Modifiers::ALT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::PlaySound,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::from([(
+					"Sound".to_owned(),
+					KeybindingArgumentValue::Uuid(soundboard.sounds().iter().find(|s| s.name == "steps").unwrap().id),
+				)]),
+			},
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Num4,
+					modifiers: Modifiers::CTRL | Modifiers::ALT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::PlaySound,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::from([(
+					"Sound".to_owned(),
+					KeybindingArgumentValue::Uuid(soundboard.sounds().iter().find(|s| s.name == "skill check").unwrap().id),
+				)]),
+			},
+			Keybinding {
+				key: LocalKeybinding {
+					key: Key::Num5,
+					modifiers: Modifiers::CTRL | Modifiers::ALT,
+				},
+				behavior: HotkeyBehavior::Press,
+				action: UiAction::PlaySound,
+				global: true,
+				id: Uuid::new_v4(),
+				arguments: HashMap::from([(
+					"Sound".to_owned(),
+					KeybindingArgumentValue::Uuid(soundboard.sounds().iter().find(|s| s.name == "never again").unwrap().id),
+				)]),
+			},
+		];
 
 		let preferences = SoundboardConfig {
 			theme: &CATPPUCCIN_MOCHA,
@@ -592,7 +668,7 @@ impl Default for SoundboardConfig {
 			input_device: AudioManager::default_input_device(),
 			output_device: AudioManager::default_output_device(),
 			background_opacity: 100.,
-			soundboard: Soundboard::new().unwrap(),
+			soundboard,
 		};
 		let _ = preferences.save_to_disk();
 		preferences

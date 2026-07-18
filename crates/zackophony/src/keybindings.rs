@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use eframe::egui::{Key, Modifiers};
 use global_hotkey::hotkey::{Code, HotKey};
@@ -31,12 +31,14 @@ impl HotkeyBehavior {
 	}
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Keybinding {
 	pub key: LocalKeybinding,
 	pub behavior: HotkeyBehavior,
 	pub action: UiAction,
 	pub global: bool,
 	pub id: Uuid,
+	pub arguments: HashMap<String, KeybindingArgumentValue>,
 }
 
 impl Keybinding {
@@ -48,12 +50,19 @@ impl Keybinding {
 	"behavior": "{behavior}",
 	"action": "{action}",
 	"id": "{id}",
+	"arguments": {{{arguments}}}
 }}"#,
 			key = self.key,
 			behavior = self.behavior.name(),
 			action = self.action.name(),
 			global = self.global,
-			id = self.id
+			id = self.id,
+			arguments = self
+				.arguments
+				.iter()
+				.map(|(name, value)| format!(r#""{name}": {}"#, value.serialize()))
+				.collect::<Vec<_>>()
+				.join(", ")
 		)
 	}
 
@@ -77,6 +86,15 @@ impl Keybinding {
 				.ok_or_else(|| anyhow::anyhow!("missing global"))?
 				.as_bool()
 				.ok_or_else(|| anyhow::anyhow!("global is not a boolean"))?,
+			arguments: json
+				.get("arguments")
+				.ok_or_else(|| anyhow::anyhow!("missing arguments"))?
+				.as_object()
+				.ok_or_else(|| anyhow::anyhow!("arguments is not an object"))?
+				.iter()
+				.map(|(name, value)| Some((name.clone(), KeybindingArgumentValue::deserialize(&value.to_string())?)))
+				.collect::<Option<HashMap<String, KeybindingArgumentValue>>>()
+				.ok_or_else(|| anyhow::anyhow!("failed to deserialize arguments"))?,
 			behavior: HotkeyBehavior::from_name(
 				json.get("behavior")
 					.ok_or_else(|| anyhow::anyhow!("missing behavior"))?
@@ -95,7 +113,7 @@ impl Keybinding {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LocalKeybinding {
 	pub key: Key,
 	pub modifiers: Modifiers,
@@ -383,4 +401,31 @@ fn string_to_key(s: &str) -> Option<Key> {
 
 		_ => return None,
 	})
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, EnumIter)]
+pub enum ArgumentType {
+	Sound,
+}
+
+pub struct KeybindingArgument {
+	pub argument_type: ArgumentType,
+	pub name: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeybindingArgumentValue {
+	Uuid(Uuid),
+}
+
+impl KeybindingArgumentValue {
+	pub fn serialize(&self) -> String {
+		match self {
+			Self::Uuid(uuid) => format!(r#""{uuid}""#),
+		}
+	}
+
+	pub fn deserialize(text: &str) -> Option<KeybindingArgumentValue> {
+		Some(KeybindingArgumentValue::Uuid(Uuid::from_str(text.trim_matches('"')).ok()?))
+	}
 }
