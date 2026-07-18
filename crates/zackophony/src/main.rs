@@ -3,6 +3,7 @@
 use crate::ui::App;
 
 mod audio;
+mod keybindings;
 mod soundboard;
 mod theme;
 mod ui;

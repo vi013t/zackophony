@@ -1,13 +1,19 @@
-use std::{str::FromStr, sync::LazyLock};
+use std::{
+	str::FromStr,
+	sync::{Arc, LazyLock, Mutex},
+};
 
 use eframe::egui::Color32;
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use rodio::{Device, DeviceTrait};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
 	audio::{AudioManager, SoundData},
+	keybindings::{HotkeyBehavior, Keybinding},
 	theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
+	ui::UiAction,
 };
 
 #[derive(Clone)]
@@ -91,14 +97,14 @@ impl SoundPage {
 			r#"{{
 	"name": "{name}",
 	"sounds": [
-	{sounds}
+{sounds}
 	]
 }}"#,
 			name = self.name,
 			sounds = self
 				.sounds
 				.iter()
-				.map(|sound| sound.serialize().lines().map(|line| format!("\t{line}")).collect::<Vec<_>>().join("\n"))
+				.map(|sound| sound.serialize().lines().map(|line| format!("\t\t{line}")).collect::<Vec<_>>().join("\n"))
 				.collect::<Vec<_>>()
 				.join(",\n"),
 		)
@@ -215,10 +221,6 @@ impl Soundboard {
 		self.sound_nodes().iter().find(|sound| sound.id() == id).copied()
 	}
 
-	pub fn get_sound(&self, id: Uuid) -> Option<&Sound> {
-		self.sounds().iter().find(|sound| sound.id == id).copied()
-	}
-
 	pub fn get_sound_mut(&mut self, id: Uuid) -> Option<&mut Sound> {
 		self.sounds_mut().into_iter().find(|sound| sound.id == id).map(|sound| sound as _)
 	}
@@ -274,7 +276,7 @@ impl SoundGroup {
 	"icon": {icon},
 	"id": "{id}",
 	"sounds": [
-	{sounds}
+{sounds}
 	]
 }}"#,
 			name = self.name,
@@ -282,7 +284,7 @@ impl SoundGroup {
 			sounds = self
 				.sounds
 				.iter()
-				.map(|sound| sound.serialize().lines().map(|line| format!("\t{line}")).collect::<Vec<_>>().join("\n"))
+				.map(|sound| sound.serialize().lines().map(|line| format!("\t\t{line}")).collect::<Vec<_>>().join("\n"))
 				.collect::<Vec<_>>()
 				.join(",\n"),
 			id = self.id,
@@ -484,6 +486,7 @@ pub struct SoundboardConfig {
 	pub(crate) output_device: Option<Device>,
 	pub(crate) background_opacity: f32,
 	pub(crate) soundboard: Soundboard,
+	pub(crate) keybindings: Arc<Mutex<Vec<Keybinding>>>,
 }
 
 impl Default for SoundboardConfig {
@@ -524,11 +527,18 @@ impl Default for SoundboardConfig {
 				soundboard.ok()
 			});
 
+			let keybindings = json
+				.get("keybindings")
+				.and_then(|keybindings| keybindings.as_array())
+				.and_then(|keybindings| keybindings.iter().map(|keybinding| Keybinding::deserialize(&keybinding.to_string()).ok()).collect());
+
 			if let Some(theme) = theme
 				&& let Some(background_opacity) = background_opacity
 				&& let Some(soundboard) = soundboard
+				&& let Some(keybindings) = keybindings
 			{
 				return SoundboardConfig {
+					keybindings: Arc::new(Mutex::new(keybindings)),
 					theme,
 					virtual_cable_device,
 					input_device,
@@ -539,8 +549,16 @@ impl Default for SoundboardConfig {
 			};
 		}
 
+		let hotkeys = vec![Keybinding {
+			key: HotKey::new(Some(Modifiers::SHIFT), Code::Backquote),
+			behavior: HotkeyBehavior::Press,
+			action: UiAction::ToggleSoundboard,
+			global: true,
+		}];
+
 		let preferences = SoundboardConfig {
 			theme: &CATPPUCCIN_MOCHA,
+			keybindings: Arc::new(Mutex::new(hotkeys)),
 			virtual_cable_device: AudioManager::default_virtual_device(),
 			input_device: AudioManager::default_input_device(),
 			output_device: AudioManager::default_output_device(),
@@ -568,6 +586,9 @@ impl SoundboardConfig {
 	"input_device": {input_device},
 	"virtual_cable_device": {virtual_cable_device},
 	"background_opacity": {background_opacity},
+	"keybindings": [
+{keybindings}
+	],
 	"soundboard": {soundboard}
 }}"#,
 			theme = self.theme.name(),
@@ -587,6 +608,14 @@ impl SoundboardConfig {
 				.and_then(|device| device.id().ok().map(|id| format!(r#""{id}""#)))
 				.unwrap_or_else(|| "null".to_owned()),
 			background_opacity = self.background_opacity.floor() as u8,
+			keybindings = self
+				.keybindings
+				.lock()
+				.unwrap()
+				.iter()
+				.map(|keybinding| keybinding.serialize().lines().map(|line| format!("\t\t{line}")).collect::<Vec<_>>().join("\n"))
+				.collect::<Vec<_>>()
+				.join(", "),
 			soundboard = self
 				.soundboard
 				.serialize()

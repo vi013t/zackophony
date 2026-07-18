@@ -1,62 +1,32 @@
 use std::{
-	collections::HashMap,
 	f32::consts::TAU,
 	sync::{
 		Arc,
 		Mutex,
-		mpmc::{Receiver, Sender, channel},
+		mpmc::{Receiver, channel},
 	},
 };
 
 use eframe::{
-	Frame,
-	Renderer,
-	egui::{
-		self,
-		Align,
-		Button,
-		Color32,
-		FontDefinitions,
-		Label,
-		Layout,
-		Margin,
-		Order,
-		Painter,
-		Pos2,
-		Rect,
-		RichText,
-		Shadow,
-		Shape,
-		Slider,
-		Stroke,
-		TextWrapMode,
-		Ui,
-		UiBuilder,
-		Vec2,
-		ViewportBuilder,
-		ViewportCommand,
-		Visuals,
-		style::HandleShape,
-		vec2,
-	},
-	emath::Rot2,
+	Frame, Renderer, egui::{
+		self, Align, Button, Checkbox, Color32, ComboBox, FontDefinitions, Label, Layout, Margin, Order, Painter, Pos2, Rect, RichText, Shadow, Shape, Slider, Stroke, TextWrapMode, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportCommand, Visuals, style::HandleShape, vec2,
+	}, emath::Rot2,
 };
 use egui_phosphor::regular as icons;
 use global_hotkey::{
 	GlobalHotKeyEvent,
 	GlobalHotKeyManager,
 	HotKeyState,
-	hotkey::{Code, HotKey, Modifiers},
 };
+use heck::ToTitleCase;
 use rand::{rngs::ThreadRng, seq::IndexedRandom as _};
 use rodio::DeviceTrait;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 use uuid::Uuid;
 
 use crate::{
-	NAME,
-	VERSION,
-	audio::{AudioManager, UiSound},
-	soundboard::{SoundTreeNode, Soundboard, SoundboardConfig},
+	NAME, VERSION, audio::{AudioManager, UiSound}, keybindings::HotkeyBehavior, soundboard::{SoundTreeNode, SoundboardConfig},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
@@ -74,11 +44,33 @@ enum AppScreen {
 	Settings(SettingsTab),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
-enum AppEvent {
-	Toggle,
-	Show,
-	Hide,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, EnumIter)]
+pub enum UiAction {
+	ToggleSoundboard,
+	Open,
+	Close,
+	PlaySound,
+}
+
+impl UiAction {
+	pub fn name(&self) -> &'static str {
+		match self {
+			UiAction::ToggleSoundboard => "Toggle soundboard",
+			UiAction::Open => "Open soundboard",
+			UiAction::Close => "Close soundboard",
+			UiAction::PlaySound => "Play sound",
+		}
+	}
+
+	pub fn from_name(name: &str) -> Option<UiAction> {
+		match name {
+			"Toggle soundboard" => Some(UiAction::ToggleSoundboard),
+			"Open soundboard" => Some(UiAction::Open),
+			"Close soundboard" => Some(UiAction::Close),
+			"Play sound" => Some(UiAction::PlaySound),
+			_ => None,
+		}
+	}
 }
 
 pub struct App {
@@ -86,11 +78,10 @@ pub struct App {
 	screen: AppScreen,
 
 	_hotkey_manager: GlobalHotKeyManager,
-	rx: Receiver<AppEvent>,
+	rx: Receiver<UiAction>,
 	rng: ThreadRng,
 
 	audio_player: Arc<Mutex<AudioManager>>,
-	hotkeys: Arc<Mutex<HashMap<HotKey, HotkeyAction>>>,
 	config: SoundboardConfig,
 	cute_message: &'static str,
 
@@ -102,7 +93,7 @@ pub struct App {
 }
 
 impl App {
-	fn new(rx: Receiver<AppEvent>) -> anyhow::Result<App> {
+	fn new(rx: Receiver<UiAction>) -> anyhow::Result<App> {
 		let config = SoundboardConfig::default();
 		let mut audio_player = AudioManager::new(
 			config.input_device.clone().unwrap(),
@@ -114,17 +105,16 @@ impl App {
 		}
 
 		let hotkey_manager = GlobalHotKeyManager::new()?;
-		let hotkeys = HashMap::from([(HotKey::new(Some(Modifiers::SHIFT), Code::Backquote), HotkeyAction::Press(UiAction::ToggleSoundboard))]);
-
-		for hotkey in hotkeys.keys() {
-			hotkey_manager.register(*hotkey)?;
+		for keybinding in config.keybindings.lock().unwrap().iter() {
+			if keybinding.global {
+				hotkey_manager.register(keybinding.key)?;
+			}
 		}
 
 		let mut rng = rand::rng();
 
 		Ok(App {
 			_hotkey_manager: hotkey_manager,
-			hotkeys: Arc::new(Mutex::new(hotkeys)),
 			screen: AppScreen::Soundboard,
 			config,
 			audio_player: Arc::new(Mutex::new(audio_player)),
@@ -175,33 +165,29 @@ impl App {
 			Box::new(move |cc| {
 				let ctx = cc.egui_ctx.clone();
 
+				// load icon font
 				let mut fonts = FontDefinitions::default();
 				egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 				cc.egui_ctx.set_fonts(fonts);
 
-				let audio_player = app.audio_player.clone();
-				let soundboard = app.config.soundboard.clone();
-				let hotkeys = app.hotkeys.clone();
+				let keybindings = app.config.keybindings.clone();
 
 				std::thread::spawn(move || {
 					let receiver = GlobalHotKeyEvent::receiver();
-					let _ = tx.send(AppEvent::Hide);
+					let _ = tx.send(UiAction::Close);
 					loop {
 						if let Ok(event) = receiver.recv() {
-							for (key, action) in hotkeys.lock().unwrap().iter() {
-								if key.id() == event.id() {
-									match action {
-										HotkeyAction::Hold { on_press, on_release } => {
+							for keybinding in keybindings.lock().unwrap().iter() {
+								if keybinding.key.id() == event.id() {
+									match keybinding.behavior {
+										HotkeyBehavior::Press => {
 											if event.state == HotKeyState::Pressed {
-												on_press.run(&soundboard, audio_player.clone(), &tx);
-											} else if event.state == HotKeyState::Released {
-												on_release.run(&soundboard, audio_player.clone(), &tx);
+												let _ = tx.send(keybinding.action);
 											}
 										},
-
-										HotkeyAction::Press(ui_action) => {
-											if event.state == HotKeyState::Pressed {
-												ui_action.run(&soundboard, audio_player.clone(), &tx);
+										HotkeyBehavior::Release => {
+											if event.state == HotKeyState::Released {
+												let _ = tx.send(keybinding.action);
 											}
 										},
 									}
@@ -788,37 +774,134 @@ impl App {
 
 							match tab {
 								SettingsTab::Appearance => {
-									ui.columns(2, |ui| {
-										ui[0].vertical(|ui| {
-											ui.label(RichText::new("Theme"));
-											ui.horizontal(|ui| {
-												ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-												ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-												ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.sound_border();
+									div().inner_margin(8.).show(ui, |ui| {
+										ui.columns(2, |ui| {
+											ui[0].vertical(|ui| {
+												ui.label(RichText::new("Theme"));
+												ui.horizontal(|ui| {
+													ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+													ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+													ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.sound_border();
 
-												ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-												ui.visuals_mut().widgets.active.bg_fill = self.config.theme.sound_border();
-												ui.visuals_mut().selection.bg_fill = self.config.theme.sound_border();
+													ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+													ui.visuals_mut().widgets.active.bg_fill = self.config.theme.sound_border();
+													ui.visuals_mut().selection.bg_fill = self.config.theme.sound_border();
 
-												ui.label(RichText::new("Background opacity").size(16.).color(self.config.theme.text()));
-												ui.add(Slider::new(&mut self.config.background_opacity, 0. ..=255.).integer().show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+													ui.label(RichText::new("Background opacity").size(16.).color(self.config.theme.text()));
+													ui.add(Slider::new(&mut self.config.background_opacity, 0. ..=255.).integer().show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+												});
 											});
 										});
 									});
 								},
 								SettingsTab::Hotkeys => {
-									ui.vertical(|ui| {
-										for (hotkey, action) in self.hotkeys.lock().unwrap().iter() {
-											ui.horizontal(|ui| {
-												ui.label("Key");
-												ui.label(hotkey.to_string());
-												ui.label("Action");
+									div().inner_margin(8.).show(ui, |ui| {
+										ui.horizontal(|ui| {
+											ui.allocate_ui_with_layout(vec2(250., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+												ui.label(RichText::new(format!(" {}   Key", icons::KEYBOARD)).size(16.).color(self.config.theme.text()));
+												ui.separator();
+												ui.add_space(4.);
+												for keybinding in self.config.keybindings.lock().unwrap().iter() {
+													ui.add(Button::new(
+														RichText::new(
+															format!("{} + {}",
+															keybinding
+															.key
+															.mods
+															.iter_names()
+															.map(|(name, _)| name).collect::<Vec<_>>().join(" + ").to_string().to_title_case(),
+															keybinding.key.key
+														))
+														.size(16.)
+														.color(self.config.theme.text())));
+												}
 											});
-										}
+
+											ui.allocate_ui_with_layout(vec2(175., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+												ui.label(RichText::new(format!(" {}   Action", icons::LIGHTNING)).size(16.).color(self.config.theme.text()));
+												ui.separator();
+												ui.add_space(4.);
+												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ComboBox::from_id_salt("hotkey-action")
+														.selected_text(RichText::new(keybinding.action.name()).size(16.).color(self.config.theme.text()))
+														.width(ui.available_width())
+														.show_ui(ui, |ui| {
+															for action in UiAction::iter() {
+																let button = ui.add(Button::new(RichText::new(action.name()).size(16.).color(self.config.theme.text())));
+
+																if button.hovered() {
+																	ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+																}
+
+																if button.clicked() {
+																	keybinding.action = action;
+																}
+															}
+														});
+												}
+											});
+
+											ui.allocate_ui_with_layout(vec2(100., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+												ui.label(RichText::new(format!(" {}   Behavior", icons::HAND_POINTING)).size(16.).color(self.config.theme.text()));
+												ui.separator();
+												ui.add_space(4.);
+												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ComboBox::from_id_salt("hotkey-behavior")
+														.selected_text(RichText::new(keybinding.behavior.name()).size(16.).color(self.config.theme.text()))
+														.width(ui.available_width())
+														.show_ui(ui, |ui| {
+															for behavior in HotkeyBehavior::iter() {
+																let button = ui.add(Button::new(RichText::new(behavior.name()).size(16.).color(self.config.theme.text())));
+																
+																if button.hovered() {
+																	ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+																}
+
+																if button.clicked() {
+																	keybinding.behavior = behavior;
+																}
+															}
+														});
+												}
+											});
+
+											ui.allocate_ui_with_layout(vec2(150., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+												ui.label(RichText::new(format!(" {}   Arguments", icons::PUZZLE_PIECE)).size(16.).color(self.config.theme.text()));
+												ui.separator();
+												ui.add_space(4.);
+												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ComboBox::from_id_salt("hotkey-arguments")
+														.selected_text(RichText::new(keybinding.behavior.name()).size(16.).color(self.config.theme.text()))
+														.width(ui.available_width())
+														.show_ui(ui, |ui| {
+															for behavior in HotkeyBehavior::iter() {
+																let button = ui.add(Button::new(RichText::new(behavior.name()).size(16.).color(self.config.theme.text())));
+																
+																if button.hovered() {
+																	ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+																}
+
+																if button.clicked() {
+																	keybinding.behavior = behavior;
+																}
+															}
+														});
+												}
+											});
+
+											ui.allocate_ui_with_layout(vec2(80., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+												ui.label(RichText::new(format!(" {}   Global", icons::GLOBE_HEMISPHERE_WEST)).size(16.).color(self.config.theme.text()));
+												ui.separator();
+												ui.add_space(4.);
+												for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+													ui.add(Checkbox::without_text(&mut keybinding.global));
+												}
+											});
+										});
 									});
 								},
 								SettingsTab::System => {
-									eframe::egui::Frame::NONE.inner_margin(8.).show(ui, |ui| {
+									div().inner_margin(8.).show(ui, |ui| {
 										ui.vertical(|ui| {
 											ui.horizontal(|ui| {
 												ui.label(RichText::new("Output device:").color(self.config.theme.text()).size(16.));
@@ -1100,11 +1183,11 @@ impl eframe::App for App {
 	fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
 		while let Ok(event) = self.rx.try_recv() {
 			match event {
-				AppEvent::Show => {
+				UiAction::Open => {
 					self.visible = true;
 					ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 				},
-				AppEvent::Toggle => {
+				UiAction::ToggleSoundboard => {
 					if self.visible {
 						self.hide(ui);
 					} else {
@@ -1112,9 +1195,10 @@ impl eframe::App for App {
 						ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 					}
 				},
-				AppEvent::Hide => {
+				UiAction::Close => {
 					self.hide(ui);
 				},
+				UiAction::PlaySound => todo!(),
 			}
 		}
 
@@ -1123,40 +1207,6 @@ impl eframe::App for App {
 			self.draw_screen(ui, overlay_frame);
 		}
 	}
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum UiAction {
-	OpenSoundboard,
-	CloseSoundboard,
-	ToggleSoundboard,
-	OpenSettings,
-	CloseSettings,
-	PlaySound { sound_id: Uuid },
-}
-
-impl UiAction {
-	fn run(&self, soundboard: &Soundboard, audio_player: Arc<Mutex<AudioManager>>, tx: &Sender<AppEvent>) {
-		match self {
-			UiAction::OpenSoundboard => {
-				let _ = tx.send(AppEvent::Show);
-			},
-			UiAction::CloseSoundboard => {
-				let _ = tx.send(AppEvent::Hide);
-			},
-			UiAction::ToggleSoundboard => {
-				let _ = tx.send(AppEvent::Toggle);
-			},
-			UiAction::OpenSettings => todo!(),
-			UiAction::CloseSettings => todo!(),
-			UiAction::PlaySound { sound_id } => todo!(),
-		}
-	}
-}
-
-pub enum HotkeyAction {
-	Hold { on_press: UiAction, on_release: UiAction },
-	Press(UiAction),
 }
 
 fn rotate_triangle_around_centroid(vertices: [Pos2; 3], angle: f32) -> Vec<Pos2> {
