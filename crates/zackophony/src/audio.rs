@@ -27,6 +27,8 @@ use rodio::{
 	source::Buffered,
 };
 
+use crate::soundboard::Sound;
+
 #[derive(Clone)]
 pub struct SoundData {
 	bytes: Vec<u8>,
@@ -148,9 +150,12 @@ impl AudioManager {
 		})
 	}
 
-	fn add_to_outputs(&self, source: impl Source<Item = f32> + Clone + Send + 'static) {
-		self.cable_sink.mixer().add(source.clone());
-		self.monitor_sink.mixer().add(source);
+	fn play_to_others(&self, source: impl Source<Item = f32> + Clone + Send + 'static, volume: f32) {
+		self.cable_sink.mixer().add(source.clone().amplify(volume));
+	}
+
+	fn play_to_me(&self, source: impl Source<Item = f32> + Clone + Send + 'static, volume: f32) {
+		self.monitor_sink.mixer().add(source.clone().amplify(volume));
 	}
 
 	pub fn upload_user_sound(&mut self, name: &str, data: SoundData) -> anyhow::Result<()> {
@@ -159,9 +164,9 @@ impl AudioManager {
 		Ok(())
 	}
 
-	pub fn play_user_sound(&mut self, name: &str) -> anyhow::Result<()> {
-		let source = self.user_sounds.get(name).ok_or_else(|| anyhow::anyhow!("Missing sound: {name}"))?;
-		self.add_to_outputs(source.data.clone());
+	pub fn play_user_sound(&mut self, sound: &Sound) -> anyhow::Result<()> {
+		self.play_to_me(sound.data.data.clone(), sound.volume_for_me as f32 / 100.);
+		self.play_to_others(sound.data.data.clone(), sound.volume_for_others as f32 / 100.);
 		Ok(())
 	}
 

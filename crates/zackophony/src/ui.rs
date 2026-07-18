@@ -58,7 +58,7 @@ use crate::{
 	VERSION,
 	audio::{AudioManager, UiSound},
 	keybindings::{HotkeyBehavior, LocalKeybinding},
-	soundboard::{SoundTreeNode, SoundboardConfig},
+	soundboard::{Sound, SoundTreeNode, SoundboardConfig},
 	theme::THEMES,
 };
 
@@ -109,6 +109,7 @@ impl UiAction {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 enum Popup {
 	DeleteSound,
+	DeletePage,
 }
 
 pub struct App {
@@ -126,6 +127,7 @@ pub struct App {
 	popup: Option<Popup>,
 	recording_keybinding: Option<Uuid>,
 	is_recording: Arc<AtomicBool>,
+	settings_sound_page: usize,
 
 	hovered_path: Option<Vec<usize>>,
 	active_path: Vec<usize>,
@@ -168,6 +170,7 @@ impl App {
 			visible: false,
 			popup: None,
 			recording_keybinding: None,
+			settings_sound_page: 0,
 			is_recording: Arc::new(AtomicBool::new(false)),
 			last_hovered_path: None,
 			hovered_path: None,
@@ -372,6 +375,88 @@ impl App {
 			});
 	}
 
+	pub fn draw_delete_page_popup(&mut self, ui: &mut Ui) {
+		egui::Area::new("delete-page-popup".into())
+			.order(Order::Foreground)
+			.anchor(egui::Align2::LEFT_TOP, Vec2::ZERO)
+			.show(ui, |ui| {
+				let parent = ui.viewport_rect();
+				let size = vec2(300., 250.);
+				let child = Rect::from_center_size(parent.center(), size);
+				ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
+					div().fill(Color32::from_black_alpha(100)).show(ui, |ui| {
+						ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
+							div()
+								.fill(self.config.theme.background())
+								.inner_margin(16.)
+								.corner_radius(8.)
+								.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
+								.shadow(Shadow::default())
+								.show(ui, |ui| {
+									ui.vertical_centered_justified(|ui| {
+										ui.label(
+											RichText::new("Are you sure you want to delete this page? All sounds and groups inside will be deleted. This can't be undone.")
+												.size(16.)
+												.color(self.config.theme.text()),
+										);
+										ui.add_space(16.);
+										ui.columns(2, |ui| {
+											let cancel_button = ui[0].add_sized(
+												[100., 28.],
+												Button::new(RichText::new("Cancel").size(16.).color(self.config.theme.background_dark()))
+													.fill(self.config.theme.red())
+													.corner_radius(4.),
+											);
+
+											if cancel_button.hovered() {
+												ui[0].set_cursor_icon(egui::CursorIcon::PointingHand);
+											}
+
+											if cancel_button.clicked() {
+												self.popup = None;
+											}
+
+											let confirm_button = ui[1].add_sized(
+												[100., 28.],
+												Button::new(RichText::new("Confirm").size(16.).color(self.config.theme.background_dark()))
+													.fill(self.config.theme.green())
+													.corner_radius(4.),
+											);
+
+											if confirm_button.hovered() {
+												ui[1].set_cursor_icon(egui::CursorIcon::PointingHand);
+											}
+
+											if confirm_button.clicked() {
+												match &self.screen {
+													AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) => {
+														self.config.soundboard.remove_sound_node(*sound_id);
+														let _ = self.config.save_to_disk();
+													},
+													AppScreen::Soundboard => {
+														if let Some(id) = self.right_clicked_id {
+															self.config.soundboard.remove_sound_node(id);
+															let _ = self.config.save_to_disk();
+														}
+													},
+													_ => {},
+												}
+
+												self.popup = None;
+												self.screen = match &self.screen {
+													AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
+													_ => self.screen,
+												};
+											}
+										});
+									});
+								})
+						});
+					});
+				});
+			});
+	}
+
 	pub fn draw_delete_sound_popup(&mut self, ui: &mut Ui) {
 		egui::Area::new("delete-sound-popup".into())
 			.order(Order::Foreground)
@@ -463,8 +548,7 @@ impl App {
 		let screen_center = ui.ctx().viewport_rect().center();
 		let max_radius = 9999999999.;
 
-		// Create deferred action variables at the top
-		let mut sound_to_play: Option<String> = None;
+		let mut sound_to_play: Option<Sound> = None;
 		let mut should_hide = false;
 
 		egui::Area::new("radial_menu_layer".into()).show(ui.ctx(), |ui| {
@@ -472,7 +556,6 @@ impl App {
 			let response = ui.allocate_rect(area_rect, egui::Sense::click_and_drag());
 			let painter = ui.painter_at(area_rect);
 
-			// 1. Traverse current active_path to figure out which rings are open
 			let mut rings = Vec::new();
 			let root_nodes = &self.config.soundboard.pages[self.page].sounds;
 			rings.push((0, root_nodes, 0.0, TAU / root_nodes.len().max(1) as f32, Vec::new()));
@@ -577,7 +660,7 @@ impl App {
 				}
 
 				if let Some(sound) = clicked_sound {
-					sound_to_play = Some(sound.name);
+					sound_to_play = Some(sound);
 					should_hide = true;
 				}
 			}
@@ -1040,104 +1123,147 @@ impl App {
 	fn draw_sound_settings(&mut self, ui: &mut Ui, id: Option<Uuid>) {
 		ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
 		ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
-		ui.horizontal(|ui| {
-			ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Max), |ui| {
-				ui.vertical(|ui| {
-					let sb = &self.config.soundboard;
-					let nodes = sb.pages[self.page].sounds.clone();
+		ui.vertical(|ui| {
+			ui.horizontal(|ui| {
+				ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+				let mut page_name = self.config.soundboard.pages[self.settings_sound_page].name.clone();
+				if page_name.is_empty() {
+					page_name = format!("Page {}", self.page + 1);
+				}
 
-					for sound_node in nodes {
-						self.draw_sound_node(ui, sound_node.id());
-					}
-				});
+				let page_left = ui.add(
+					Button::new(RichText::new(icons::CARET_LEFT).size(16.).color(self.config.theme.text()))
+						.stroke(Stroke::NONE)
+						.fill(self.config.theme.background()),
+				);
+				if page_left.hovered() {
+					ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+				}
+				if page_left.clicked() && self.settings_sound_page > 0 {
+					self.settings_sound_page -= 1;
+				}
+
+				ui.add_space(ui.available_width() / 2.5);
+
+				ui.label(RichText::new(page_name).size(16.).color(self.config.theme.text()));
+
+				ui.add_space(ui.available_width());
+
+				let page_right = ui.add(
+					Button::new(
+						RichText::new(if self.settings_sound_page < self.config.soundboard.pages.len() - 1 {
+							icons::CARET_RIGHT
+						} else {
+							icons::PLUS
+						})
+						.size(16.)
+						.color(self.config.theme.text()),
+					)
+					.stroke(Stroke::NONE)
+					.fill(self.config.theme.background()),
+				);
+				if page_right.hovered() {
+					ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+				}
+				if page_right.clicked() && self.settings_sound_page < self.config.soundboard.pages.len() - 1 {
+					self.settings_sound_page += 1;
+				}
+
+				let delete_page = ui.add(
+					Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red()))
+						.stroke(Stroke::NONE)
+						.fill(self.config.theme.background()),
+				);
+
+				if delete_page.hovered() {
+					ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+				}
+
+				if delete_page.clicked() {
+					self.popup = Some(Popup::DeletePage);
+				}
 			});
 
+			ui.add_space(4.);
 			ui.separator();
+			ui.add_space(4.);
 
-			if let Some(id) = id {
-				let sound = self.config.soundboard.get_sound_mut(id);
-				if let Some(sound) = sound {
-					div().inner_margin(8.).show(ui, |ui| {
-						ui.vertical(|ui| {
-							ui.horizontal(|ui| {
-								ui.label(
-									RichText::new(format!(" {}   Sound Properties", icons::SPEAKER_HIGH))
-										.size(16.)
-										.color(self.config.theme.text_bright()),
-								);
-								ui.add_space(ui.available_width());
+			ui.horizontal(|ui| {
+				ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Max), |ui| {
+					ui.vertical(|ui| {
+						let sb = &self.config.soundboard;
+						let nodes = sb.pages[self.settings_sound_page].sounds.clone();
 
-								let delete_button = ui.add(
-									Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red()))
-										.fill(self.config.theme.background())
-										.stroke(Stroke::NONE),
-								);
+						for sound_node in nodes {
+							self.draw_sound_node(ui, sound_node.id());
+						}
+					});
+				});
 
-								if delete_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
+				ui.separator();
 
-								if delete_button.clicked() {
-									self.popup = Some(Popup::DeleteSound);
-								}
-							});
+				if let Some(id) = id {
+					let sound = self.config.soundboard.get_sound_mut(id);
+					if let Some(sound) = sound {
+						div().inner_margin(8.).show(ui, |ui| {
+							ui.vertical(|ui| {
+								ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+								ui.spacing_mut().interact_size.y = 28.;
 
-							ui.add_space(4.);
-							ui.separator();
-							ui.add_space(4.);
+								ui.horizontal(|ui| {
+									ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
+									ui.text_edit_singleline(&mut sound.name);
+								});
 
-							ui.horizontal(|ui| {
-								ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
-								ui.text_edit_singleline(&mut sound.name);
-							});
+								ui.add_space(4.);
 
-							ui.add_space(4.);
+								ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
 
-							ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
+								ui.add_space(4.);
 
-							ui.add_space(4.);
+								ui.horizontal(|ui| {
+									ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+									ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+									ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
 
-							ui.horizontal(|ui| {
-								ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-								ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-								ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
+									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
+									ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
 
-								ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-								ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
-								ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
+									ui.label(RichText::new("Volume for me:").size(16.).color(self.config.theme.text()));
+									ui.add(
+										Slider::new(&mut sound.volume_for_me, 0..=100)
+											.integer()
+											.handle_shape(HandleShape::Circle)
+											.trailing_fill(true),
+									);
+								});
 
-								ui.label(RichText::new("Volume for me:").size(16.).color(self.config.theme.text()));
-								ui.add(
-									Slider::new(&mut sound.volume_for_me, 0..=100)
-										.integer()
-										.handle_shape(HandleShape::Circle)
-										.trailing_fill(true),
-								);
-							});
+								ui.add_space(4.);
 
-							ui.add_space(4.);
+								ui.horizontal(|ui| {
+									ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
+									ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
+									ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
 
-							ui.horizontal(|ui| {
-								ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-								ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-								ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
+									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
+									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
+									ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
 
-								ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-								ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
-								ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
-
-								ui.label(RichText::new("Volume for others:").size(16.).color(self.config.theme.text()));
-								ui.add(
-									Slider::new(&mut sound.volume_for_others, 0..=100)
-										.integer()
-										.handle_shape(HandleShape::Circle)
-										.trailing_fill(true),
-								);
+									ui.label(RichText::new("Volume for others:").size(16.).color(self.config.theme.text()));
+									ui.add(
+										Slider::new(&mut sound.volume_for_others, 0..=100)
+											.integer()
+											.handle_shape(HandleShape::Circle)
+											.trailing_fill(true),
+									);
+								});
 							});
 						});
-					});
+					}
 				}
-			}
+			});
 		});
 	}
 
@@ -1151,7 +1277,7 @@ impl App {
 				);
 				ui.add_space(20.);
 				ui.horizontal(|ui| {
-					ui.allocate_ui_with_layout(vec2(250., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+					ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Min), |ui| {
 						ui.label(RichText::new(format!(" {}   Key", icons::KEYBOARD)).size(16.).color(self.config.theme.text()));
 						ui.separator();
 						ui.add_space(4.);
@@ -1548,6 +1674,8 @@ impl App {
 			.show(ui, |ui| {
 				ui.horizontal(|ui| {
 					ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+					ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
+					ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
 					let page_left = ui.add(
 						Button::new(RichText::new(icons::CARET_LEFT).color(self.config.theme.accent()).size(16.))
 							.fill(Color32::from_hex("#11111bcc").unwrap())
@@ -1682,6 +1810,7 @@ impl eframe::App for App {
 			if let Some(popup) = self.popup {
 				match popup {
 					Popup::DeleteSound => self.draw_delete_sound_popup(ui),
+					Popup::DeletePage => self.draw_delete_page_popup(ui),
 				}
 			}
 
