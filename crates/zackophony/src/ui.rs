@@ -18,6 +18,7 @@ use eframe::{
 		Checkbox,
 		Color32,
 		ComboBox,
+		CursorIcon,
 		Event,
 		FontDefinitions,
 		Key,
@@ -59,7 +60,7 @@ use crate::{
 	audio::{AudioManager, UiSound},
 	keybindings::{HotkeyBehavior, LocalKeybinding},
 	soundboard::{Sound, SoundTreeNode, SoundboardConfig},
-	theme::THEMES,
+	theme::{THEMES, Theme},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
@@ -80,17 +81,25 @@ enum AppScreen {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, EnumIter)]
 pub enum UiAction {
 	ToggleSoundboard,
-	Open,
-	Close,
+	OpenSoundboard,
+	CloseSoundboard,
 	PlaySound,
 }
 
 impl UiAction {
+	pub fn force_global(&self) -> bool {
+		matches!(self, Self::ToggleSoundboard | Self::OpenSoundboard)
+	}
+
+	pub fn force_local(&self) -> bool {
+		matches!(self, Self::CloseSoundboard)
+	}
+
 	pub fn name(&self) -> &'static str {
 		match self {
 			UiAction::ToggleSoundboard => "Toggle soundboard",
-			UiAction::Open => "Open soundboard",
-			UiAction::Close => "Close soundboard",
+			UiAction::OpenSoundboard => "Open soundboard",
+			UiAction::CloseSoundboard => "Close soundboard",
 			UiAction::PlaySound => "Play sound",
 		}
 	}
@@ -98,8 +107,8 @@ impl UiAction {
 	pub fn from_name(name: &str) -> Option<UiAction> {
 		match name {
 			"Toggle soundboard" => Some(UiAction::ToggleSoundboard),
-			"Open soundboard" => Some(UiAction::Open),
-			"Close soundboard" => Some(UiAction::Close),
+			"Open soundboard" => Some(UiAction::OpenSoundboard),
+			"Close soundboard" => Some(UiAction::CloseSoundboard),
 			"Play sound" => Some(UiAction::PlaySound),
 			_ => None,
 		}
@@ -236,7 +245,7 @@ impl App {
 				// global hotkey listener
 				std::thread::spawn(move || {
 					let receiver = GlobalHotKeyEvent::receiver();
-					let _ = tx.send(UiAction::Close);
+					let _ = tx.send(UiAction::CloseSoundboard);
 					loop {
 						if let Ok(event) = receiver.recv() {
 							if is_recording.load(Ordering::Relaxed) {
@@ -1126,6 +1135,7 @@ impl App {
 		ui.vertical(|ui| {
 			ui.horizontal(|ui| {
 				ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+
 				let mut page_name = self.config.soundboard.pages[self.settings_sound_page].name.clone();
 				if page_name.is_empty() {
 					page_name = format!("Page {}", self.page + 1);
@@ -1189,7 +1199,7 @@ impl App {
 			ui.add_space(4.);
 
 			ui.horizontal(|ui| {
-				ui.allocate_ui_with_layout(vec2(200., ui.available_height()), Layout::top_down(Align::Max), |ui| {
+				ui.allocate_ui_with_layout(vec2(300., ui.available_height()), Layout::top_down(Align::Max), |ui| {
 					ui.vertical(|ui| {
 						let sb = &self.config.soundboard;
 						let nodes = sb.pages[self.settings_sound_page].sounds.clone();
@@ -1222,43 +1232,11 @@ impl App {
 
 								ui.add_space(4.);
 
-								ui.horizontal(|ui| {
-									ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-									ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-									ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
-
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
-									ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
-
-									ui.label(RichText::new("Volume for me:").size(16.).color(self.config.theme.text()));
-									ui.add(
-										Slider::new(&mut sound.volume_for_me, 0..=100)
-											.integer()
-											.handle_shape(HandleShape::Circle)
-											.trailing_fill(true),
-									);
-								});
+								App::draw_volume_slider(ui, "Volume for me:", &mut sound.volume_for_me, self.config.theme);
 
 								ui.add_space(4.);
 
-								ui.horizontal(|ui| {
-									ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-									ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-									ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
-
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
-									ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
-
-									ui.label(RichText::new("Volume for others:").size(16.).color(self.config.theme.text()));
-									ui.add(
-										Slider::new(&mut sound.volume_for_others, 0..=100)
-											.integer()
-											.handle_shape(HandleShape::Circle)
-											.trailing_fill(true),
-									);
-								});
+								App::draw_volume_slider(ui, "Volume for others:", &mut sound.volume_for_others, self.config.theme);
 							});
 						});
 					}
@@ -1415,8 +1393,16 @@ impl App {
 								ui.style_mut().spacing.icon_width = 28.0;
 								ui.style_mut().spacing.icon_width_inner = 16.0;
 
+								if keybinding.action.force_global() {
+									keybinding.global = true;
+								} else if keybinding.action.force_local() {
+									keybinding.global = false;
+								}
 								let mut is_global = keybinding.global;
-								let checkbox = ui.add(Checkbox::without_text(&mut is_global));
+								let checkbox = ui.add_enabled(
+									!keybinding.action.force_global() && !keybinding.action.force_local(),
+									Checkbox::without_text(&mut is_global),
+								);
 
 								if checkbox.changed() {
 									keybinding.global = is_global;
@@ -1469,22 +1455,32 @@ impl App {
 
 					ui.add_space(4.);
 					ui.horizontal(|ui| {
-						ui.visuals_mut().widgets.inactive.fg_stroke.color = self.config.theme.text();
-						ui.visuals_mut().widgets.hovered.fg_stroke.color = self.config.theme.text();
-						ui.visuals_mut().widgets.active.fg_stroke.color = self.config.theme.accent();
-
-						ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.text_dim();
-						ui.visuals_mut().widgets.active.bg_fill = self.config.theme.accent();
-						ui.visuals_mut().selection.bg_fill = self.config.theme.accent();
-
 						ui.label(RichText::new("Background opacity").size(16.).color(self.config.theme.text()));
-						ui.add(
+
+						let visuals = ui.visuals_mut();
+						visuals.widgets.inactive.bg_fill = Color32::from_hex("#313244").unwrap();
+						visuals.widgets.hovered.bg_fill = Color32::from_hex("#45475a").unwrap();
+						visuals.widgets.active.bg_fill = Color32::from_hex("#585b70").unwrap();
+
+						visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+						visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, self.config.theme.accent());
+						visuals.widgets.active.fg_stroke = Stroke::new(2.0, self.config.theme.accent());
+
+						visuals.selection.bg_fill = self.config.theme.accent();
+
+						ui.style_mut().spacing.slider_width = 160.0;
+						ui.style_mut().spacing.slider_rail_height = 4.0;
+						let bg_slider = ui.add(
 							Slider::new(&mut self.config.background_opacity, 0. ..=255.)
 								.integer()
 								.show_value(false)
 								.handle_shape(HandleShape::Circle)
 								.trailing_fill(true),
 						);
+
+						if bg_slider.hovered() {
+							ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+						}
 					});
 				});
 			});
@@ -1760,6 +1756,38 @@ impl App {
 		result
 	}
 
+	fn draw_volume_slider(ui: &mut Ui, label_text: &str, value: &mut u8, theme: &Theme) {
+		ui.horizontal(|ui| {
+			ui.label(RichText::new(label_text).size(16.).color(theme.text()));
+			let visuals = ui.visuals_mut();
+			visuals.widgets.inactive.bg_fill = Color32::from_hex("#313244").unwrap();
+			visuals.widgets.hovered.bg_fill = Color32::from_hex("#45475a").unwrap();
+			visuals.widgets.active.bg_fill = Color32::from_hex("#585b70").unwrap();
+
+			visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+			visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, theme.accent());
+			visuals.widgets.active.fg_stroke = Stroke::new(2.0, theme.accent());
+
+			visuals.selection.bg_fill = theme.accent();
+
+			ui.style_mut().spacing.slider_width = 160.0;
+			ui.style_mut().spacing.slider_rail_height = 4.0;
+
+			let slider_response = ui.add(Slider::new(value, 0..=100).show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+
+			if slider_response.hovered() {
+				ui.set_cursor_icon(CursorIcon::PointingHand);
+			}
+
+			ui.add_space(8.);
+			ui.label(
+				RichText::new(format!("{}%", value))
+					.size(14.)
+					.color(if slider_response.hovered() { theme.accent() } else { theme.text_dim() }),
+			);
+		});
+	}
+
 	fn get_ring_radii(level: usize) -> (f32, f32) {
 		let base_inner_radius = 60.0;
 		let base_outer_radius = 150.0;
@@ -1785,7 +1813,7 @@ impl eframe::App for App {
 	fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
 		while let Ok(event) = self.rx.try_recv() {
 			match event {
-				UiAction::Open => {
+				UiAction::OpenSoundboard => {
 					self.visible = true;
 					ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 				},
@@ -1797,7 +1825,7 @@ impl eframe::App for App {
 						ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
 					}
 				},
-				UiAction::Close => {
+				UiAction::CloseSoundboard => {
 					self.hide(ui);
 				},
 				UiAction::PlaySound => todo!(),
@@ -1863,12 +1891,13 @@ fn random_cute_message(rng: &mut ThreadRng) -> &'static str {
 		"nya!",
 		"u are pawesomesauce!!! :D",
 		"ruff :3",
-		"you are loved!",
+		"you are loved :D",
 		"time to play some stupid sounds >:3",
 		"please call me i guarantee i miss u right now",
 		"ROT AND DIE!!!!!!!!!",
 		"ur an idiot ^_^",
 		"i can just really put whatever here n u have to see it huh",
+		"ZACKARONI AND CHEESE !!!!!!",
 	]
 	.choose(rng)
 	.unwrap()
