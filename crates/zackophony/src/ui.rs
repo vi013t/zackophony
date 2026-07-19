@@ -229,6 +229,8 @@ impl App {
 		self.is_recording.store(false, Ordering::Relaxed);
 		self.recording_keybinding = None;
 
+		self.icon_picker_coords = None;
+
 		let _ = self.config.save_to_disk();
 	}
 
