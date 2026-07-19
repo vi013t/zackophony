@@ -64,6 +64,13 @@ pub struct SoundPage {
 }
 
 impl SoundPage {
+	pub fn new() -> SoundPage {
+		SoundPage {
+			name: String::new(),
+			sounds: Vec::new(),
+		}
+	}
+
 	pub fn sounds(&self) -> Vec<&Sound> {
 		self.sounds
 			.iter()

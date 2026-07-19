@@ -7,7 +7,7 @@ use mslnk::ShellLink;
 use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
 fn main() -> anyhow::Result<()> {
-	install_vbcable()?;
+	// install_vbcable()?;
 	install_zackophony()?;
 	create_start_menu_shortcut()?;
 	register_startup()?;
