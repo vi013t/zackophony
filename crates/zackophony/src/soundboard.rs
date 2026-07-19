@@ -228,6 +228,17 @@ impl Soundboard {
 		})
 	}
 
+	pub fn get_sound_node_mut(&mut self, id: Uuid) -> Option<&mut SoundTreeNode> {
+		for page in &mut self.pages {
+			for node in &mut page.sounds {
+				if let Some(found) = node.find_node_mut(id) {
+					return Some(found);
+				}
+			}
+		}
+		None
+	}
+
 	pub fn sounds(&self) -> Vec<&Sound> {
 		self.pages.iter().flat_map(|p| p.sounds()).collect()
 	}
@@ -357,7 +368,6 @@ pub enum SoundTreeNode {
 	Sound(Sound),
 	Group(SoundGroup),
 }
-
 impl SoundTreeNode {
 	pub fn name(&self) -> &String {
 		match self {
@@ -373,6 +383,24 @@ impl SoundTreeNode {
 		}
 	}
 
+	pub fn find_node_mut(&mut self, id: Uuid) -> Option<&mut SoundTreeNode> {
+		// Did we find the target?
+		if self.id() == id {
+			return Some(self);
+		}
+
+		// If it's a group, search through its children
+		if let SoundTreeNode::Group(group) = self {
+			for child in &mut group.sounds {
+				if let Some(found) = child.find_node_mut(id) {
+					return Some(found);
+				}
+			}
+		}
+
+		None
+	}
+
 	pub fn deserialize(text: &str) -> anyhow::Result<SoundTreeNode> {
 		let json: Map<String, Value> = serde_json::from_str(text)?;
 		Ok(if json.contains_key("sounds") {
@@ -386,6 +414,13 @@ impl SoundTreeNode {
 		match self {
 			SoundTreeNode::Sound(sound) => sound.id,
 			SoundTreeNode::Group(group) => group.id,
+		}
+	}
+
+	pub fn set_icon(&mut self, icon: &str) {
+		match self {
+			SoundTreeNode::Sound(sound) => sound.icon = Some(icon.to_owned()),
+			SoundTreeNode::Group(sound_folder) => sound_folder.icon = Some(icon.to_owned()),
 		}
 	}
 

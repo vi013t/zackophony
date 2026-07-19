@@ -81,7 +81,9 @@ impl AudioManager {
 	pub fn set_devices(&mut self, input_device: Device, output_device: Device, virtual_device: Device) {
 		let user_sounds = std::mem::take(&mut self.user_sounds);
 		let ui_sounds = std::mem::take(&mut self.ui_sounds);
-		*self = AudioManager::with_sounds(input_device, output_device, virtual_device, user_sounds, ui_sounds).unwrap();
+		if let Ok(manager) = AudioManager::with_sounds(input_device, output_device, virtual_device, user_sounds, ui_sounds) {
+			*self = manager;
+		}
 	}
 
 	fn with_sounds(
