@@ -6,7 +6,6 @@ use crate::ui::App;
 mod audio;
 mod keybindings;
 mod soundboard;
-mod theme;
 mod ui;
 
 pub const NAME: &str = "Zackophony";

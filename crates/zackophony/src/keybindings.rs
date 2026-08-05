@@ -17,15 +17,15 @@ pub enum HotkeyBehavior {
 impl HotkeyBehavior {
 	pub fn name(&self) -> &'static str {
 		match self {
-			HotkeyBehavior::Press => "Press",
-			HotkeyBehavior::Release => "Release",
+			HotkeyBehavior::Press => "Pressed",
+			HotkeyBehavior::Release => "Released",
 		}
 	}
 
 	pub fn from_name(name: &str) -> Option<HotkeyBehavior> {
 		match name {
-			"Press" => Some(HotkeyBehavior::Press),
-			"Release" => Some(HotkeyBehavior::Release),
+			"Pressed" => Some(HotkeyBehavior::Press),
+			"Released" => Some(HotkeyBehavior::Release),
 			_ => None,
 		}
 	}

@@ -12,8 +12,10 @@ use uuid::Uuid;
 use crate::{
 	audio::{AudioManager, SoundData},
 	keybindings::{HotkeyBehavior, Keybinding, KeybindingArgumentValue, LocalKeybinding},
-	theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
-	ui::UiAction,
+	ui::{
+		UiAction,
+		theme::{CATPPUCCIN_MOCHA, THEMES, Theme},
+	},
 };
 
 #[derive(Clone)]
@@ -368,6 +370,7 @@ pub enum SoundTreeNode {
 	Sound(Sound),
 	Group(SoundGroup),
 }
+
 impl SoundTreeNode {
 	pub fn name(&self) -> &String {
 		match self {
@@ -383,13 +386,19 @@ impl SoundTreeNode {
 		}
 	}
 
+	pub fn is_group(&self) -> bool {
+		matches!(self, SoundTreeNode::Group(_))
+	}
+
+	pub fn is_sound(&self) -> bool {
+		matches!(self, SoundTreeNode::Sound(_))
+	}
+
 	pub fn find_node_mut(&mut self, id: Uuid) -> Option<&mut SoundTreeNode> {
-		// Did we find the target?
 		if self.id() == id {
 			return Some(self);
 		}
 
-		// If it's a group, search through its children
 		if let SoundTreeNode::Group(group) = self {
 			for child in &mut group.sounds {
 				if let Some(found) = child.find_node_mut(id) {
@@ -608,9 +617,9 @@ impl Default for SoundboardConfig {
 				return SoundboardConfig {
 					keybindings: Arc::new(Mutex::new(keybindings)),
 					theme,
-					virtual_cable_device,
-					input_device,
-					output_device,
+					virtual_cable_device: virtual_cable_device.or_else(AudioManager::default_virtual_device),
+					input_device: input_device.or_else(AudioManager::default_input_device),
+					output_device: output_device.or_else(AudioManager::default_output_device),
 					background_opacity,
 					soundboard,
 				};

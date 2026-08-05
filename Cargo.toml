@@ -5,15 +5,17 @@ authors = ["violet cherry valentine"]
 license = "CC-BY-NC-SA-4.0"
 
 [workspace]
+resolver = "3"
 members = [
 	"crates/zackophony",
 	"crates/egui-phosphor",
 	"crates/zackophony-installer",
+	"crates/egui-div",
 ]
-resolver = "3"
 
 [workspace.dependencies]
 egui-phosphor = { path = "crates/egui-phosphor" }
+egui-div = { path = "crates/egui-div" }
 
 [profile.release]
 lto = true

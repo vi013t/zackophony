@@ -1,6 +1,7 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	f32::consts::TAU,
+	ops::RangeInclusive,
 	sync::{
 		Arc,
 		Mutex,
@@ -15,9 +16,9 @@ use eframe::{
 	egui::{
 		self,
 		Align,
+		Align2,
 		Area,
 		Button,
-		Checkbox,
 		Color32,
 		ComboBox,
 		CursorIcon,
@@ -48,8 +49,9 @@ use eframe::{
 		style::HandleShape,
 		vec2,
 	},
-	emath::Rot2,
+	emath::{self, Rot2},
 };
+use egui_div::{Div, Gradient, GradientDirection, Listeners, button, div};
 use egui_phosphor::regular as icons;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use rand::{rngs::ThreadRng, seq::IndexedRandom as _};
@@ -64,8 +66,10 @@ use crate::{
 	audio::{AudioManager, SoundData, UiSound},
 	keybindings::{ArgumentType, HotkeyBehavior, Keybinding, KeybindingArgument, KeybindingArgumentValue, LocalKeybinding},
 	soundboard::{Sound, SoundGroup, SoundPage, SoundTreeNode, SoundboardConfig},
-	theme::{THEMES, Theme},
+	ui::theme::{THEMES, Theme},
 };
+
+pub mod theme;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
 enum SettingsTab {
@@ -164,6 +168,8 @@ pub struct App {
 	right_clicked_id: Option<Uuid>,
 	picking_file: Option<Option<Uuid>>,
 	page: usize,
+
+	open_groups: HashSet<Uuid>,
 }
 
 impl App {
@@ -210,8 +216,15 @@ impl App {
 			hovered_path: None,
 			active_path: Vec::new(),
 			right_clicked_id: None,
+			open_groups: HashSet::new(),
 			page: 0,
 		})
+	}
+
+	fn show(&mut self, ui: &mut Ui) {
+		self.visible = true;
+		ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
+		ui.send_viewport_cmd(ViewportCommand::Focus);
 	}
 
 	fn hide(&mut self, ui: &mut Ui) {
@@ -219,9 +232,12 @@ impl App {
 		self.screen = AppScreen::Soundboard;
 		ui.send_viewport_cmd(ViewportCommand::MousePassthrough(true));
 
+		// clear popups or state caches
 		self.hovered_path = None;
 		self.active_path = Vec::new();
 		self.right_clicked_id = None;
+		self.popup = None;
+		self.icon_picker_coords = None;
 
 		// generate a new cute message :D
 		let mut cute_message = random_cute_message(&mut self.rng);
@@ -230,11 +246,11 @@ impl App {
 		}
 		self.cute_message = cute_message;
 
+		// stop any keybinding recording
 		self.is_recording.store(false, Ordering::Relaxed);
 		self.recording_keybinding = None;
 
-		self.icon_picker_coords = None;
-
+		// save preferences to disk
 		let _ = self.config.save_to_disk();
 	}
 
@@ -270,7 +286,6 @@ impl App {
 				let keybindings = app.config.keybindings.clone();
 				let keybinding_arguments = app.keybinding_arguments.clone();
 
-				// global hotkey listener
 				std::thread::spawn(move || {
 					let receiver = GlobalHotKeyEvent::receiver();
 					let _ = tx.send(UiAction::CloseSoundboard);
@@ -381,21 +396,17 @@ impl App {
 			.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
 			.show(ui, |ui| {
 				ui.vertical_centered(|ui| {
-					let settings_button = ui.add(
-						Button::new(RichText::new(icons::GEAR).size(25.).color(self.config.theme.accent()))
-							.min_size(Vec2::splat(50.))
-							.corner_radius(25.)
-							.fill(Color32::from_hex("#11111bcc").unwrap())
-							.stroke(Stroke::NONE),
-					);
-
-					if settings_button.hovered() {
-						ui.set_cursor_icon(CursorIcon::PointingHand);
-					}
-
-					if settings_button.clicked() {
-						self.screen = AppScreen::Settings(SettingsTab::Appearance);
-					}
+					button()
+						.size([50., 50.])
+						.corner_radius(25.)
+						.text(icons::GEAR)
+						.text_color(self.config.theme.accent())
+						.corner_radius(25.)
+						.font_size(28.)
+						.fill(self.config.theme.sound_background())
+						.stroke(Stroke::NONE)
+						.add_to(ui)
+						.on_click(|| self.screen = AppScreen::Settings(SettingsTab::Appearance));
 				});
 			});
 
@@ -404,21 +415,17 @@ impl App {
 			.anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
 			.show(ui, |ui| {
 				ui.vertical_centered(|ui| {
-					let close_button = ui.add(
-						Button::new(RichText::new(icons::X).size(16.).color(self.config.theme.red()))
-							.min_size(Vec2::splat(40.))
-							.corner_radius(25.)
-							.fill(Color32::from_hex("#11111bcc").unwrap())
-							.stroke(Stroke::NONE),
-					);
-
-					if close_button.hovered() {
-						ui.set_cursor_icon(CursorIcon::PointingHand);
-					}
-
-					if close_button.clicked() {
-						self.hide(ui);
-					}
+					button()
+						.size([40., 40.])
+						.corner_radius(20.)
+						.text(icons::X)
+						.text_color(self.config.theme.red())
+						.corner_radius(25.)
+						.font_size(16.)
+						.fill(self.config.theme.sound_background())
+						.stroke(Stroke::NONE)
+						.add_to(ui)
+						.on_click(|| self.hide(ui));
 				});
 			});
 	}
@@ -428,9 +435,9 @@ impl App {
 		let size = vec2(300., 250.);
 		let child = Rect::from_center_size(parent.center(), size);
 		ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
-			div().fill(Color32::TRANSPARENT).show(ui, |ui| {
+			empty_frame().fill(Color32::TRANSPARENT).show(ui, |ui| {
 				ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-					div()
+					empty_frame()
 						.fill(self.config.theme.background())
 						.inner_margin(16.)
 						.corner_radius(8.)
@@ -502,16 +509,17 @@ impl App {
 
 	pub fn draw_delete_group_popup(&mut self, ui: &mut Ui) {
 		let parent = ui.viewport_rect();
-		let size = vec2(300., 250.);
+		let size = vec2(300., 130.);
 		let child = Rect::from_center_size(parent.center(), size);
 		ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
-			div().fill(Color32::TRANSPARENT).show(ui, |ui| {
+			empty_frame().fill(Color32::TRANSPARENT).show(ui, |ui| {
 				ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
 					div()
+						.size(size)
 						.fill(self.config.theme.background())
 						.inner_margin(16.)
 						.corner_radius(8.)
-						.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
+						.stroke(Stroke::new(1., self.config.theme.background_bright()))
 						.shadow(Shadow {
 							offset: [0, 0],
 							blur: 8,
@@ -522,49 +530,49 @@ impl App {
 							ui.vertical_centered_justified(|ui| {
 								ui.label(
 									RichText::new("Are you sure you want to delete this group? All sounds and groups inside will be deleted. This can't be undone.")
-										.size(16.)
+										.size(14.)
 										.color(self.config.theme.text()),
 								);
 								ui.add_space(16.);
 								ui.columns(2, |ui| {
-									let cancel_button = ui[0].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Cancel").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.red())
-											.corner_radius(4.),
-									);
+									button()
+										.size([125., 28.])
+										.text("Cancel")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.pink())
+												.color2(self.config.theme.red())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[0])
+										.on_click(|| self.popup = None);
 
-									if cancel_button.hovered() {
-										ui[0].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
+									button()
+										.size([125., 28.])
+										.text("Confirm")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.teal())
+												.color2(self.config.theme.green())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[1])
+										.on_click(|| {
+											if let AppScreen::Settings(SettingsTab::Sounds(Some(id))) = &self.screen {
+												self.config.soundboard.remove_sound_node(*id);
+												let _ = self.config.save_to_disk();
+											}
 
-									if cancel_button.clicked() {
-										self.popup = None;
-									}
-
-									let confirm_button = ui[1].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Confirm").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.green())
-											.corner_radius(4.),
-									);
-
-									if confirm_button.hovered() {
-										ui[1].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if confirm_button.clicked() {
-										if let AppScreen::Settings(SettingsTab::Sounds(Some(id))) = &self.screen {
-											self.config.soundboard.remove_sound_node(*id);
-											let _ = self.config.save_to_disk();
-										}
-
-										self.popup = None;
-										self.screen = match &self.screen {
-											AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
-											_ => self.screen,
-										};
-									}
+											self.popup = None;
+											self.screen = match &self.screen {
+												AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
+												_ => self.screen,
+											};
+										});
 								});
 							});
 						})
@@ -578,9 +586,9 @@ impl App {
 		let size = vec2(300., 200.);
 		let child = Rect::from_center_size(parent.center(), size);
 		ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
-			div().fill(Color32::TRANSPARENT).show(ui, |ui| {
+			empty_frame().fill(Color32::TRANSPARENT).show(ui, |ui| {
 				ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-					div()
+					empty_frame()
 						.fill(self.config.theme.background_dark())
 						.shadow(Shadow {
 							offset: [0, 0],
@@ -703,7 +711,6 @@ impl App {
 			let mut new_hovered_path = None;
 			let mut new_active_path = self.active_path.clone();
 
-			// 2. Hit-Test rings from the outside-in (Reverse order)
 			if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
 				for (level, nodes, parent_angle, slice_angle, path_prefix) in rings.iter().rev() {
 					let (inner_r, outer_r) = App::get_ring_radii(*level);
@@ -731,7 +738,6 @@ impl App {
 					}
 				}
 
-				// If hovering over something, derive how deep the active folders remain open
 				if let Some(path) = &new_hovered_path {
 					let mut current = &self.config.soundboard.pages[self.page].sounds;
 					let mut is_group = false;
@@ -756,7 +762,6 @@ impl App {
 				}
 			}
 
-			// 3. Handle Click Action (Deferred to avoid borrow conflicts)
 			if response.clicked()
 				&& let Some(path) = &new_hovered_path
 			{
@@ -781,7 +786,6 @@ impl App {
 				}
 			}
 
-			// 4. Handle Right Click Action
 			if response.secondary_clicked() {
 				if let Some(path) = &new_hovered_path {
 					let mut current = &self.config.soundboard.pages[self.page].sounds;
@@ -802,7 +806,6 @@ impl App {
 				}
 			}
 
-			// Sync interactions to state
 			self.hovered_path = new_hovered_path;
 			self.active_path = new_active_path;
 
@@ -814,7 +817,6 @@ impl App {
 			}
 			self.last_hovered_path = self.hovered_path.clone();
 
-			// 5. Draw Context Menu (using right_clicked_id)
 			if let Some(id) = self.right_clicked_id {
 				response.context_menu(|ui| {
 					let visuals = ui.visuals_mut();
@@ -1060,42 +1062,50 @@ impl App {
 	fn draw_settings(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame, tab: SettingsTab) {
 		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
 			let parent = ui.max_rect();
-			let size = parent.size() * 0.5;
+			let size = parent.size() * 0.55;
 			let child = Rect::from_center_size(parent.center(), size);
 
 			ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
 				div()
-					.fill(self.config.theme.background())
+					.fill(
+						Gradient::new()
+							.color1(self.config.theme.background())
+							.color2(self.config.theme.background_dim())
+							.direction(GradientDirection::ToBottomRight),
+					)
+					.size(child.size())
 					.inner_margin(16.)
 					.corner_radius(8.)
-					.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
+					.stroke(Stroke::new(1., self.config.theme.background_bright()))
 					.shadow(Shadow::default())
 					.show(ui, |ui| {
 						ui.horizontal(|ui| {
-							ui.label(
-								RichText::new(format!(" {}   {NAME} Settings", icons::GEAR))
-									.size(16.)
-									.color(self.config.theme.text_bright()),
-							);
-							ui.add_space(ui.available_width());
-							ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
-							ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
-							let close_button = ui.add(
-								Button::new(RichText::new(icons::X).color(self.config.theme.red()))
-									.fill(Color32::TRANSPARENT)
-									.stroke(Stroke::NONE),
-							);
+							div()
+								.size([200., 28.])
+								.text(format!(" {}   {NAME} Settings", icons::GEAR))
+								.font_size(16.)
+								.text_color(self.config.theme.text_bright())
+								.add_to(ui);
 
-							if close_button.hovered() {
-								ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-							}
+							ui.add_space(ui.available_width() - 28.);
+
+							let close_button = ui.add(
+								div()
+									.text(icons::X)
+									.size([28., 28.])
+									.text_color(self.config.theme.red())
+									.fill(Color32::TRANSPARENT)
+									.cursor(CursorIcon::PointingHand)
+									.hover_fill(self.config.theme.background_bright())
+									.text_align(Align2::CENTER_CENTER)
+									.corner_radius(4.),
+							);
 
 							if close_button.clicked() {
 								self.screen = AppScreen::Soundboard;
 							}
 						});
-						ui.add_space(8.);
-						ui.visuals_mut().widgets.noninteractive.bg_stroke.color = Color32::from_hex("#585b70").unwrap();
+
 						ui.separator();
 						ui.add_space(8.);
 
@@ -1121,132 +1131,53 @@ impl App {
 	}
 
 	fn draw_settings_sidebar(&mut self, ui: &mut Ui) {
-		ui.allocate_ui_with_layout(vec2(170., ui.available_height()), Layout::top_down(Align::Max), |ui| {
+		ui.allocate_ui_with_layout(vec2(170., ui.available_height()), Layout::top_down(Align::Min), |ui| {
 			ui.vertical(|ui| {
-				ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
-				ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
+				macro_rules! draw_sidebar_button {
+					($name: expr, $icon: expr, $screen: expr) => {
+						let button = ui.add(
+							div()
+								.text(format!("  {}   {}", $icon, $name))
+								.font_size(14.)
+								.text_align(Align2::LEFT_CENTER)
+								.text_color(if self.screen == $screen {
+									self.config.theme.background_dark()
+								} else {
+									self.config.theme.text()
+								})
+								.size([200., 28.])
+								.corner_radius(4.)
+								.stroke(Stroke::NONE)
+								.cursor(CursorIcon::PointingHand)
+								.hover_fill(if self.screen == $screen {
+									self.config.theme.accent()
+								} else {
+									self.config.theme.background_bright()
+								})
+								.fill(if self.screen == $screen {
+									self.config.theme.accent()
+								} else {
+									Color32::TRANSPARENT
+								}),
+						);
 
-				let appearance_button = ui.add(
-					Button::new(
-						RichText::new(format!(" {}   Appearance", icons::PALETTE))
-							.color(if self.screen == AppScreen::Settings(SettingsTab::Appearance) {
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							})
-							.size(16.),
-					)
-					.fill(Color32::TRANSPARENT)
-					.stroke(Stroke::NONE),
-				);
-
-				if appearance_button.hovered() {
-					ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+						if button.clicked() {
+							self.screen = $screen;
+						}
+					};
 				}
 
-				if appearance_button.clicked() {
-					self.screen = AppScreen::Settings(SettingsTab::Appearance);
-				}
-
-				ui.add_space(8.);
-
-				let sounds_button = ui.add(
-					Button::new(
-						RichText::new(format!(" {}   Sounds", icons::SPEAKER_HIGH))
-							.color(if matches!(self.screen, AppScreen::Settings(SettingsTab::Sounds(_))) {
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							})
-							.size(16.),
-					)
-					.fill(Color32::TRANSPARENT)
-					.stroke(Stroke::NONE),
-				);
-				if sounds_button.hovered() {
-					ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-
-				if sounds_button.clicked() {
-					self.screen = AppScreen::Settings(SettingsTab::Sounds(None));
-				}
-
-				ui.add_space(8.);
-
-				let system_button = ui.add(
-					Button::new(
-						RichText::new(format!(" {}   System", icons::CPU))
-							.color(if self.screen == AppScreen::Settings(SettingsTab::System) {
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							})
-							.size(16.),
-					)
-					.fill(Color32::TRANSPARENT)
-					.stroke(Stroke::NONE),
-				);
-				if system_button.hovered() {
-					ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-
-				if system_button.clicked() {
-					self.screen = AppScreen::Settings(SettingsTab::System);
-				}
-
-				ui.add_space(8.);
-
-				let hotkeys_button = ui.add(
-					Button::new(
-						RichText::new(format!(" {}   Hotkeys", icons::KEYBOARD))
-							.color(if self.screen == AppScreen::Settings(SettingsTab::Hotkeys) {
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							})
-							.size(16.),
-					)
-					.fill(Color32::TRANSPARENT)
-					.stroke(Stroke::NONE),
-				);
-
-				if hotkeys_button.hovered() {
-					ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-
-				if hotkeys_button.clicked() {
-					self.screen = AppScreen::Settings(SettingsTab::Hotkeys);
-				}
-
-				ui.add_space(8.);
-
-				let support_button = ui.add(
-					Button::new(
-						RichText::new(format!(" {}   Support", icons::QUESTION))
-							.color(if self.screen == AppScreen::Settings(SettingsTab::Support) {
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							})
-							.size(16.),
-					)
-					.fill(Color32::TRANSPARENT)
-					.stroke(Stroke::NONE),
-				);
-
-				if support_button.hovered() {
-					ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-
-				if support_button.clicked() {
-					self.screen = AppScreen::Settings(SettingsTab::Support);
-				}
+				draw_sidebar_button!("Appearance", icons::PALETTE, AppScreen::Settings(SettingsTab::Appearance));
+				draw_sidebar_button!("Sounds", icons::SPEAKER_HIGH, AppScreen::Settings(SettingsTab::Sounds(None)));
+				draw_sidebar_button!("System", icons::CPU, AppScreen::Settings(SettingsTab::System));
+				draw_sidebar_button!("Keybindings", icons::KEYBOARD, AppScreen::Settings(SettingsTab::Hotkeys));
+				draw_sidebar_button!("Support", icons::QUESTION, AppScreen::Settings(SettingsTab::Support));
 			});
 		});
 	}
 
 	fn draw_support_settings(&mut self, ui: &mut Ui) {
-		div().inner_margin(8.).show(ui, |ui| {
+		empty_frame().inner_margin(8.).show(ui, |ui| {
 			ui.vertical(|ui| {
 				ui.horizontal(|ui| {
 					ui.add(
@@ -1265,327 +1196,352 @@ impl App {
 	fn draw_sound_settings(&mut self, ui: &mut Ui, id: Option<Uuid>) {
 		ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
 		ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
-		ui.vertical(|ui| {
-			ui.horizontal(|ui| {
-				ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
 
-				let mut page_name = self.config.soundboard.pages[self.settings_sound_page].name.clone();
-				if page_name.is_empty() {
-					page_name = format!("Page {}", self.settings_sound_page + 1);
-				}
+		ui.horizontal_top(|ui| {
+			ui.set_min_height(ui.available_height());
+			ui.allocate_ui_with_layout(vec2(400., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+				ui.vertical(|ui| {
+					ui.horizontal(|ui| {
+						let mut page_name = self.config.soundboard.pages[self.settings_sound_page].name.clone();
+						if page_name.is_empty() {
+							page_name = format!("Page {}", self.settings_sound_page + 1);
+						}
+						ui.label(RichText::new(page_name.to_uppercase()).size(12.).color(self.config.theme.accent()));
 
-				let page_left = ui.add(
-					Button::new(RichText::new(icons::CARET_LEFT).size(16.).color(self.config.theme.text()))
-						.stroke(Stroke::NONE)
-						.fill(self.config.theme.background()),
-				);
-				if page_left.hovered() {
-					ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-				if page_left.clicked() && self.settings_sound_page > 0 {
-					self.settings_sound_page -= 1;
-				}
+						ui.add_space(ui.available_width() - 60.);
 
-				ui.add_space(ui.available_width() / 2.5);
-
-				ui.label(RichText::new(page_name).size(16.).color(self.config.theme.text()));
-
-				ui.add_space(ui.available_width());
-
-				let page_right = ui.add(
-					Button::new(
-						RichText::new(if self.settings_sound_page < self.config.soundboard.pages.len() - 1 {
-							icons::CARET_RIGHT
+						if self.settings_sound_page > 0 {
+							let page_left = ui.add(
+								div()
+									.text(icons::CARET_LEFT)
+									.font_size(14.)
+									.size([24., 24.])
+									.text_color(self.config.theme.text())
+									.hover_fill(self.config.theme.background_bright())
+									.text_align(Align2::CENTER_CENTER)
+									.corner_radius(4.)
+									.cursor(CursorIcon::PointingHand),
+							);
+							if page_left.clicked() && self.settings_sound_page > 0 {
+								self.settings_sound_page -= 1;
+							}
 						} else {
-							icons::PLUS
-						})
-						.size(16.)
-						.color(self.config.theme.text()),
-					)
-					.stroke(Stroke::NONE)
-					.fill(self.config.theme.background()),
-				);
-				if page_right.hovered() {
-					ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-				}
-				if page_right.clicked() {
-					if self.settings_sound_page == self.config.soundboard.pages.len() - 1 {
-						self.config.soundboard.pages.push(SoundPage::new());
-					};
-					self.settings_sound_page += 1;
-				}
-
-				if self.config.soundboard.pages.len() > 1 {
-					let delete_page = ui.add(
-						Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red()))
-							.stroke(Stroke::NONE)
-							.fill(self.config.theme.background()),
-					);
-
-					if delete_page.hovered() {
-						ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-
-					if delete_page.clicked() {
-						self.popup = Some(Popup::DeletePage);
-					}
-				}
-			});
-
-			ui.add_space(4.);
-			ui.separator();
-			ui.add_space(4.);
-
-			ui.horizontal(|ui| {
-				ui.allocate_ui_with_layout(vec2(300., ui.available_height()), Layout::top_down(Align::Max), |ui| {
-					ui.vertical(|ui| {
-						let sb = &self.config.soundboard;
-						let nodes = sb.pages[self.settings_sound_page].sounds.clone();
-
-						for sound_node in nodes {
-							self.draw_sound_node(ui, sound_node.id());
+							ui.add(div().size([24., 24.]));
 						}
 
-						ui.add_space(32.);
-
-						let add_sound_button = ui.add_sized(
-							[200., 28.],
-							Button::new(RichText::new("Add sound").size(16.).color(self.config.theme.background_dark()))
-								.fill(self.config.theme.green())
-								.corner_radius(4.),
+						let page_right = ui.add(
+							div()
+								.text(if self.settings_sound_page < self.config.soundboard.pages.len() - 1 {
+									icons::CARET_RIGHT
+								} else {
+									icons::PLUS
+								})
+								.font_size(14.)
+								.size([24., 24.])
+								.text_color(self.config.theme.text())
+								.hover_fill(self.config.theme.background_bright())
+								.text_align(Align2::CENTER_CENTER)
+								.corner_radius(4.)
+								.cursor(CursorIcon::PointingHand),
 						);
-
-						ui.add_space(8.);
-
-						if add_sound_button.clicked() {
-							ui.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-							self.picking_file = Some(None);
-						}
-
-						if add_sound_button.hovered() {
+						if page_right.hovered() {
 							ui.set_cursor_icon(egui::CursorIcon::PointingHand);
 						}
-						let add_group_button = ui.add_sized(
-							[200., 28.],
-							Button::new(RichText::new("Add group").size(16.).color(self.config.theme.background_dark()))
-								.fill(self.config.theme.accent())
-								.corner_radius(4.),
-						);
-
-						if add_group_button.clicked() {
-							self.config.soundboard.pages[self.settings_sound_page].sounds.push(SoundTreeNode::Group(SoundGroup {
-								name: "New Group".to_owned(),
-								icon: Some(egui_phosphor::regular::PACKAGE.to_owned()),
-								id: Uuid::new_v4(),
-								sounds: Vec::new(),
-							}));
+						if page_right.clicked() {
+							if self.settings_sound_page == self.config.soundboard.pages.len() - 1 {
+								self.config.soundboard.pages.push(SoundPage::new());
+							};
+							self.settings_sound_page += 1;
 						}
 
-						if add_group_button.hovered() {
-							ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+						if self.config.soundboard.pages.len() > 1 {
+							let delete_page = ui.add(
+								Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red()))
+									.stroke(Stroke::NONE)
+									.fill(self.config.theme.background()),
+							);
+
+							if delete_page.hovered() {
+								ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+							}
+
+							if delete_page.clicked() {
+								self.popup = Some(Popup::DeletePage);
+							}
 						}
 					});
 				});
 
-				ui.separator();
+				let sb = &self.config.soundboard;
+				let nodes = sb.pages[self.settings_sound_page].sounds.clone();
 
-				if let Some(id) = id {
-					let sound = self.config.soundboard.get_sound_mut(id);
-					if let Some(sound) = sound {
-						div().inner_margin(8.).show(ui, |ui| {
-							ui.vertical(|ui| {
-								ui.horizontal(|ui| {
-									ui.set_max_height(28.);
-									ui.set_min_height(28.);
-									ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
-
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.spacing_mut().interact_size.y = 28.;
-									ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
-									ui.add_sized(vec2(200., 28.), TextEdit::singleline(&mut sound.name).vertical_align(Align::Center));
-								});
-
-								ui.add_space(4.);
-
-								ui.horizontal(|ui| {
-									ui.set_max_height(28.);
-									ui.set_min_height(28.);
-									ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
-
-									ui.add_space(4.);
-
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.spacing_mut().interact_size.y = 28.;
-									ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
-
-									let icon_button = ui.add_sized(vec2(28., 28.), Button::new(RichText::new(sound.icon.as_ref().cloned().unwrap_or_default())));
-
-									if icon_button.hovered() {
-										ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if icon_button.clicked() {
-										self.icon_picker_coords = ui.pointer_latest_pos();
-									}
-								});
-
-								ui.add_space(4.);
-
-								App::draw_volume_slider(ui, "Volume for me:", &mut sound.volume_for_me, self.config.theme);
-
-								ui.add_space(4.);
-
-								App::draw_volume_slider(ui, "Volume for others:", &mut sound.volume_for_others, self.config.theme);
-
-								ui.add_space(16.);
-
-								let delete_button = ui.add_sized(
-									[200., 28.],
-									Button::new(RichText::new("Delete sound").size(16.).color(self.config.theme.background_dark()))
-										.fill(self.config.theme.red())
-										.corner_radius(4.),
-								);
-
-								if delete_button.clicked() {
-									self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(sound.id)));
-									self.popup = Some(Popup::DeleteSound);
-									ui.request_repaint();
-								}
-
-								if delete_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-							});
-						});
-					} else if let Some(SoundTreeNode::Group(group)) = self.config.soundboard.get_sound_node_mut(id) {
-						div().inner_margin(8.).show(ui, |ui| {
-							ui.vertical(|ui| {
-								ui.horizontal(|ui| {
-									ui.set_max_height(28.);
-									ui.set_min_height(28.);
-									ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
-
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.spacing_mut().interact_size.y = 28.;
-									ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
-									ui.add_sized(vec2(200., 28.), TextEdit::singleline(&mut group.name).vertical_align(Align::Center));
-								});
-
-								ui.add_space(4.);
-
-								ui.horizontal(|ui| {
-									ui.set_max_height(28.);
-									ui.set_min_height(28.);
-									ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
-
-									ui.add_space(4.);
-
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.spacing_mut().interact_size.y = 28.;
-									ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
-
-									let icon_button = ui.add_sized(vec2(28., 28.), Button::new(RichText::new(group.icon.as_ref().cloned().unwrap_or_default())));
-
-									if icon_button.hovered() {
-										ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if icon_button.clicked() {
-										self.icon_picker_coords = ui.pointer_latest_pos();
-									}
-								});
-
-								ui.add_space(16.);
-
-								let add_button = ui.add_sized(
-									[200., 28.],
-									Button::new(RichText::new("Upload sound here").size(16.).color(self.config.theme.background_dark()))
-										.fill(self.config.theme.green())
-										.corner_radius(4.),
-								);
-
-								if add_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-
-								if add_button.clicked() {
-									ui.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-									self.picking_file = Some(Some(group.id));
-								}
-
-								ui.add_space(8.);
-
-								let add_group_button = ui.add_sized(
-									[200., 28.],
-									Button::new(RichText::new("Create group here").size(16.).color(self.config.theme.background_dark()))
-										.fill(self.config.theme.accent())
-										.corner_radius(4.),
-								);
-
-								if add_group_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-
-								if add_group_button.clicked() {
-									group.sounds.push(SoundTreeNode::Group(SoundGroup {
-										name: "New Group".to_owned(),
-										icon: Some(egui_phosphor::regular::PACKAGE.to_owned()),
-										id: Uuid::new_v4(),
-										sounds: Vec::new(),
-									}));
-								}
-
-								ui.add_space(8.);
-
-								let delete_button = ui.add_sized(
-									[200., 28.],
-									Button::new(RichText::new("Delete sound group").size(16.).color(self.config.theme.background_dark()))
-										.fill(self.config.theme.red())
-										.corner_radius(4.),
-								);
-
-								if delete_button.clicked() {
-									self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(group.id)));
-									self.popup = Some(Popup::DeleteGroup);
-									ui.request_repaint();
-								}
-
-								if delete_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-							});
-						});
-					}
+				for sound_node in nodes.iter().filter(|node| matches!(node, SoundTreeNode::Group(_))) {
+					self.draw_sound_node(ui, sound_node.id());
 				}
+
+				for sound_node in nodes.iter().filter(|node| matches!(node, SoundTreeNode::Sound(_))) {
+					self.draw_sound_node(ui, sound_node.id());
+				}
+
+				ui.add_space(ui.available_height() - 28.);
+
+				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+					button()
+						.size([28., 28.])
+						.text(icons::FILE_PLUS)
+						.font_size(16.)
+						.text_color(self.config.theme.text())
+						.fill(self.config.theme.background_dim())
+						.stroke(Stroke::new(1., self.config.theme.background_bright()))
+						.hover_fill(self.config.theme.background_bright())
+						.add_to(ui)
+						.on_click(|| {
+							ui.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+							self.picking_file = Some(None);
+						});
+
+					ui.add_space(4.);
+
+					button()
+						.size([28., 28.])
+						.text(icons::FOLDER_SIMPLE_PLUS)
+						.font_size(16.)
+						.text_color(self.config.theme.text())
+						.fill(self.config.theme.background_dim())
+						.stroke(Stroke::new(1., self.config.theme.background_bright()))
+						.hover_fill(self.config.theme.background_bright())
+						.add_to(ui)
+						.on_click(|| {
+							let id = Uuid::new_v4();
+							self.config.soundboard.pages[self.settings_sound_page].sounds.push(SoundTreeNode::Group(SoundGroup {
+								name: "New Group".to_owned(),
+								icon: Some(egui_phosphor::regular::PACKAGE.to_owned()),
+								id,
+								sounds: Vec::new(),
+							}));
+							self.open_groups.insert(id);
+							self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+						});
+
+					ui.add_space(4.);
+				});
 			});
+
+			ui.separator();
+
+			if let Some(id) = id {
+				let sound = self.config.soundboard.get_sound_mut(id);
+				if let Some(sound) = sound {
+					empty_frame().inner_margin(8.).show(ui, |ui| {
+						ui.vertical(|ui| {
+							ui.horizontal(|ui| {
+								ui.set_max_height(28.);
+								ui.set_min_height(28.);
+								ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
+
+								ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
+								ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
+
+								ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
+
+								ui.visuals_mut().extreme_bg_color = self.config.theme.background_dim();
+
+								ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1., self.config.theme.text());
+								ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1., self.config.theme.text());
+								ui.visuals_mut().widgets.active.fg_stroke = Stroke::new(1., self.config.theme.text());
+
+								ui.spacing_mut().interact_size.y = 28.;
+
+								ui.add_sized(vec2(200., 28.), TextEdit::singleline(&mut sound.name).vertical_align(Align::Center));
+							});
+
+							ui.add_space(4.);
+
+							ui.horizontal(|ui| {
+								ui.set_max_height(28.);
+								ui.set_min_height(28.);
+								ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
+
+								ui.add_space(4.);
+
+								let icon_button = ui.add(
+									div()
+										.size([28., 28.])
+										.text(sound.icon.as_ref().cloned().unwrap_or_default())
+										.cursor(CursorIcon::PointingHand)
+										.text_align(Align2::CENTER_CENTER)
+										.fill(self.config.theme.background_dim())
+										.text_color(self.config.theme.text())
+										.stroke(Stroke::new(1., self.config.theme.background_bright()))
+										.corner_radius(4.),
+								);
+
+								if icon_button.clicked() {
+									self.icon_picker_coords = ui.pointer_latest_pos();
+								}
+							});
+
+							ui.add_space(4.);
+
+							App::draw_volume_slider(ui, "Volume for me:", &mut sound.volume_for_me, 0..=100, self.config.theme);
+
+							ui.add_space(4.);
+
+							App::draw_volume_slider(ui, "Volume for others:", &mut sound.volume_for_others, 0..=100, self.config.theme);
+
+							ui.add_space(ui.available_height() - 24.);
+
+							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+								button()
+									.size([28., 28.])
+									.text(icons::TRASH)
+									.font_size(16.)
+									.text_color(self.config.theme.red())
+									.fill(self.config.theme.background_dim())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.hover_fill(self.config.theme.background_bright())
+									.add_to(ui)
+									.on_click(|| {
+										self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(sound.id)));
+										self.popup = Some(Popup::DeleteSound);
+										ui.request_repaint();
+									});
+							})
+						});
+					});
+				} else if let Some(SoundTreeNode::Group(group)) = self.config.soundboard.get_sound_node_mut(id) {
+					empty_frame().inner_margin(8.).show(ui, |ui| {
+						ui.vertical(|ui| {
+							ui.horizontal(|ui| {
+								ui.set_max_height(28.);
+								ui.set_min_height(28.);
+								ui.label(RichText::new("Name:").size(16.).color(self.config.theme.text()));
+
+								ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
+								ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
+
+								ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
+
+								ui.visuals_mut().extreme_bg_color = self.config.theme.background_dim();
+
+								ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1., self.config.theme.text());
+								ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1., self.config.theme.text());
+								ui.visuals_mut().widgets.active.fg_stroke = Stroke::new(1., self.config.theme.text());
+
+								ui.spacing_mut().interact_size.y = 28.;
+
+								ui.add_sized(vec2(200., 28.), TextEdit::singleline(&mut group.name).vertical_align(Align::Center));
+							});
+
+							ui.add_space(4.);
+
+							ui.horizontal(|ui| {
+								ui.set_max_height(28.);
+								ui.set_min_height(28.);
+								ui.label(RichText::new("Icon:").size(16.).color(self.config.theme.text()));
+
+								ui.add_space(4.);
+
+								let icon_button = ui.add(
+									div()
+										.size([28., 28.])
+										.text(group.icon.as_ref().cloned().unwrap_or_default())
+										.cursor(CursorIcon::PointingHand)
+										.text_align(Align2::CENTER_CENTER)
+										.fill(self.config.theme.background_dim())
+										.text_color(self.config.theme.text())
+										.stroke(Stroke::new(1., self.config.theme.background_bright()))
+										.corner_radius(4.),
+								);
+
+								if icon_button.hovered() {
+									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+								}
+
+								if icon_button.clicked() {
+									self.icon_picker_coords = ui.pointer_latest_pos();
+								}
+							});
+
+							ui.add_space(ui.available_height() - 24.);
+
+							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+								button()
+									.size([28., 28.])
+									.text(icons::TRASH)
+									.font_size(16.)
+									.text_color(self.config.theme.red())
+									.fill(self.config.theme.background_dim())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.hover_fill(self.config.theme.background_bright())
+									.add_to(ui)
+									.on_click(|| {
+										self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(group.id)));
+										self.popup = Some(Popup::DeleteGroup);
+										ui.request_repaint();
+									});
+
+								ui.add_space(4.);
+
+								button()
+									.size([28., 28.])
+									.text(icons::FILE_PLUS)
+									.font_size(16.)
+									.text_color(self.config.theme.text())
+									.fill(self.config.theme.background_dim())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.hover_fill(self.config.theme.background_bright())
+									.add_to(ui)
+									.on_click(|| {
+										ui.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+										self.picking_file = Some(Some(group.id));
+									});
+
+								ui.add_space(4.);
+
+								button()
+									.size([28., 28.])
+									.text(icons::FOLDER_SIMPLE_PLUS)
+									.font_size(16.)
+									.text_color(self.config.theme.text())
+									.fill(self.config.theme.background_dim())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.hover_fill(self.config.theme.background_bright())
+									.add_to(ui)
+									.on_click(|| {
+										let id = Uuid::new_v4();
+										group.sounds.push(SoundTreeNode::Group(SoundGroup {
+											name: "New Group".to_owned(),
+											icon: Some(egui_phosphor::regular::PACKAGE.to_owned()),
+											sounds: Vec::new(),
+											id,
+										}));
+										self.open_groups.insert(group.id);
+										self.open_groups.insert(id);
+										self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
+										ui.request_repaint();
+									});
+
+								ui.add_space(4.);
+							});
+						});
+					});
+				}
+			}
 		});
 	}
 
@@ -1629,83 +1585,105 @@ impl App {
 	fn draw_icon_picker(&mut self, ui: &mut Ui) {
 		let columns = 10;
 		let rows = 5;
+		let gap = 8.;
+		let button_size = 28.;
 		if let Some(pointer) = self.icon_picker_coords {
-			let icon_picker = Area::new("icon-picker".into())
-				.fixed_pos(pointer)
-				.default_size(vec2((28. + 6.) * (rows + 1) as f32, 200.))
-				.show(ui, |ui| {
-					div()
-						.fill(self.config.theme.background_dark())
-						.corner_radius(8.)
-						.stroke(Stroke::new(1., Color32::from_hex("#313244").unwrap()))
-						.inner_margin(8.)
-						.shadow(Shadow {
-							offset: [0, 0],
-							blur: 8,
-							spread: 2,
-							color: Color32::BLACK,
-						})
-						.show(ui, |ui| {
+			let icon_picker = Area::new("icon-picker".into()).fixed_pos(pointer).default_size(vec2(10., 10.)).show(ui, |ui| {
+				div()
+					.size([(button_size + gap) * columns as f32 + gap, (button_size + gap) * rows as f32 + button_size + gap * 1.5])
+					.fill(self.config.theme.background_dark())
+					.stroke(Stroke::new(1., self.config.theme.background_bright()))
+					.corner_radius(8.)
+					.inner_margin(8.)
+					.shadow(Shadow {
+						offset: [0, 0],
+						blur: 8,
+						spread: 2,
+						color: Color32::BLACK,
+					})
+					.show(ui, |ui| {
+						ui.vertical(|ui| {
+							let icons = icons::ICONS
+								.iter()
+								.filter(|(name, _icon)| name.replace(" ", "").to_lowercase().contains(&self.icon_picker_search_text.to_lowercase().replace("_", "")))
+								.collect::<Vec<_>>();
+
+							ui.spacing_mut().interact_size.y = 28.;
+
+							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background();
+							ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background();
+							ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background();
+							ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background();
+							ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background();
+							ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background();
+
+							ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1., self.config.theme.text_bright());
+
+							ui.add_sized(
+								vec2((28. + 7.) * columns as f32, 28.),
+								TextEdit::singleline(&mut self.icon_picker_search_text).vertical_align(Align::Center).hint_text("Search..."),
+							);
+
+							ui.add_space(4.);
+
 							ui.vertical(|ui| {
-								let icons = icons::ICONS
-									.iter()
-									.filter(|(name, _icon)| name.replace(" ", "").to_lowercase().contains(&self.icon_picker_search_text.to_lowercase().replace("_", "")))
-									.collect::<Vec<_>>();
+								for row in 0..rows {
+									if row > rows {
+										break;
+									}
 
-								ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background();
-								ui.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
-								ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-								ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-								ui.spacing_mut().interact_size.y = 28.;
+									ui.horizontal(|ui| {
+										for column in 0..columns {
+											let index = row * columns + column;
+											if index < icons.len() {
+												let icon = icons[index].1;
+												let icon_button = ui.add(
+													div()
+														.text(icon)
+														.size([28., 28.])
+														.text_color(self.config.theme.text())
+														.fill(self.config.theme.background())
+														.corner_radius(4.)
+														.text_align(Align2::CENTER_CENTER)
+														.hover_fill(self.config.theme.background_bright())
+														.stroke(Stroke::new(1., self.config.theme.background_bright())),
+												);
 
-								ui.add_sized(
-									vec2((28. + 7.) * columns as f32, 28.),
-									TextEdit::singleline(&mut self.icon_picker_search_text).vertical_align(Align::Center).hint_text("Search..."),
-								);
-								ui.add_space(4.);
+												if icon_button.hovered() {
+													ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+												}
 
-								ui.vertical(|ui| {
-									for row in 0..rows {
-										if row > rows {
-											break;
-										}
-
-										ui.horizontal(|ui| {
-											for column in 0..columns {
-												let index = row * columns + column;
-												if index < icons.len() {
-													let icon = icons[index].1;
-													let icon_button = ui.add_sized(vec2(28., 28.), Button::new(RichText::new(icon)));
-
-													if icon_button.hovered() {
-														ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-													}
-
-													if icon_button.clicked()
-														&& let AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) = &self.screen
-														&& let Some(sound) = self.config.soundboard.get_sound_node_mut(*sound_id)
-													{
-														sound.set_icon(icon);
-														self.icon_picker_coords = None;
-													}
+												if icon_button.clicked()
+													&& let AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) = &self.screen
+													&& let Some(sound) = self.config.soundboard.get_sound_node_mut(*sound_id)
+												{
+													sound.set_icon(icon);
+													self.icon_picker_coords = None;
 												}
 											}
-										});
+										}
+									});
+
+									if row < rows {
+										ui.add_space(4.);
 									}
-								});
+								}
 							});
 						});
-				});
+					});
+			});
+
+			if icon_picker.response.clicked_elsewhere() {
+				self.icon_picker_coords = None;
+			}
 		}
 	}
 
 	fn draw_hotkeys_settings(&mut self, ui: &mut Ui) {
-		div().inner_margin(8.).show(ui, |ui| {
+		empty_frame().inner_margin(8.).show(ui, |ui| {
 			ui.vertical(|ui| {
 				ui.label(
 					RichText::new(format!(" {}   Global keybindings are activated even if the soundboard overlay isn't open.", icons::INFO))
@@ -1719,30 +1697,23 @@ impl App {
 						ui.separator();
 						ui.add_space(4.);
 						for keybinding in self.config.keybindings.lock().unwrap().iter() {
-							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-
-							let record_button = ui.add_sized(
-								vec2(ui.available_width(), 28.),
-								Button::new(
-									RichText::new(if self.recording_keybinding.is_some_and(|id| id == keybinding.id) {
-										"Recording...".to_owned()
-									} else {
-										format!("{}", keybinding.key)
-									})
-									.size(16.)
-									.color(self.config.theme.text()),
-								),
-							);
-
-							if record_button.hovered() {
-								ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-							}
-
-							if record_button.clicked() {
-								self.recording_keybinding = Some(keybinding.id);
-								self.is_recording.store(true, Ordering::Relaxed);
-							}
+							button()
+								.size([ui.available_width(), 28.])
+								.text(if self.recording_keybinding.is_some_and(|id| id == keybinding.id) {
+									"Recording...".to_owned()
+								} else {
+									format!("{}", keybinding.key)
+								})
+								.font_size(14.)
+								.text_color(self.config.theme.text())
+								.fill(self.config.theme.background_dim())
+								.hover_fill(self.config.theme.background_bright())
+								.stroke(Stroke::new(1., self.config.theme.background_bright()))
+								.add_to(ui)
+								.on_click(|| {
+									self.recording_keybinding = Some(keybinding.id);
+									self.is_recording.store(true, Ordering::Relaxed);
+								});
 						}
 					});
 
@@ -1754,29 +1725,37 @@ impl App {
 						ui.add_space(4.);
 
 						for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
 							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+							ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+							ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
 							ui.spacing_mut().interact_size.y = 28.;
-							ComboBox::from_id_salt(format!("hotkey-action-{}", keybinding.id))
-								.selected_text(RichText::new(keybinding.action.name()).size(16.).color(self.config.theme.text()))
+							let action_selector = ComboBox::from_id_salt(format!("hotkey-action-{}", keybinding.id))
+								.selected_text(RichText::new(keybinding.action.name()).size(14.).color(self.config.theme.text()))
 								.width(ui.available_width())
 								.show_ui(ui, |ui| {
 									for action in UiAction::iter() {
-										ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-										let button = ui.add(Button::new(RichText::new(action.name()).size(16.).color(self.config.theme.text())));
-
-										if button.hovered() {
-											ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-										}
-
-										if button.clicked() {
-											keybinding.action = action;
-										}
+										button()
+											.size([175., 20.])
+											.text(action.name())
+											.text_align(Align2::LEFT_CENTER)
+											.fill(self.config.theme.background_dim())
+											.text_color(self.config.theme.text())
+											.hover_fill(self.config.theme.background_bright())
+											.font_size(14.)
+											.add_to(ui)
+											.on_click(|| keybinding.action = action);
 									}
 								});
+
+							if action_selector.response.hovered() {
+								ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+							}
 						}
 					});
 
@@ -1787,29 +1766,35 @@ impl App {
 						ui.separator();
 						ui.add_space(4.);
 						for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
 							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+							ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+							ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
 							ui.spacing_mut().interact_size.y = 28.;
-							ComboBox::from_id_salt(format!("hotkey-behavior-{}", keybinding.id))
-								.selected_text(RichText::new(keybinding.behavior.name()).size(16.).color(self.config.theme.text()))
+							let behavior_selector = ComboBox::from_id_salt(format!("hotkey-behavior-{}", keybinding.id))
+								.selected_text(RichText::new(keybinding.behavior.name()).size(14.).color(self.config.theme.text()))
 								.width(ui.available_width())
 								.show_ui(ui, |ui| {
 									for behavior in HotkeyBehavior::iter() {
-										ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-										ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-										let button = ui.add(Button::new(RichText::new(behavior.name()).size(16.).color(self.config.theme.text())));
-
-										if button.hovered() {
-											ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-										}
-
-										if button.clicked() {
-											keybinding.behavior = behavior;
-										}
+										button()
+											.text(format!("  {}", behavior.name()))
+											.size([100., 20.])
+											.font_size(14.)
+											.text_color(self.config.theme.text())
+											.text_align(Align2::LEFT_CENTER)
+											.fill(self.config.theme.background_dim())
+											.add_to(ui)
+											.on_click(|| keybinding.behavior = behavior);
 									}
 								});
+
+							if behavior_selector.response.hovered() {
+								ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+							}
 						}
 					});
 
@@ -1825,32 +1810,48 @@ impl App {
 							ui.spacing_mut().interact_size.y = 28.;
 
 							if let Some(argument) = keybinding.action.arguments().first() {
-								let value = keybinding.arguments.get(argument.name).and_then(|inner| match inner {
-									KeybindingArgumentValue::Uuid(uuid) => self.config.soundboard.get_sound_node(*uuid).map(|s| s.name().clone()),
+								let sound = keybinding.arguments.get(argument.name).and_then(|inner| match inner {
+									KeybindingArgumentValue::Uuid(uuid) => self.config.soundboard.get_sound_node(*uuid),
 								});
 
-								ComboBox::from_id_salt(format!("hotkey-arguments-{}", keybinding.id))
-									.selected_text(RichText::new(value.unwrap_or_default()).size(16.).color(self.config.theme.text()))
+								ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
+								ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+								ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+								ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+								ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+								ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
+								ui.spacing_mut().interact_size.y = 28.;
+								let argument_selector = ComboBox::from_id_salt(format!("hotkey-arguments-{}", keybinding.id))
+									.selected_text(
+										RichText::new(sound.map(|sound| format!(" {}   {}", sound.icon().map_or("", |v| v), sound.name())).unwrap_or_default())
+											.size(14.)
+											.color(self.config.theme.text()),
+									)
 									.width(ui.available_width())
 									.show_ui(ui, |ui| match argument.argument_type {
 										ArgumentType::Sound => {
 											for sound in self.config.soundboard.sounds() {
-												ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-												ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-												ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-												ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-												let button = ui.add(Button::new(RichText::new(&sound.name).size(16.).color(self.config.theme.text())));
-
-												if button.hovered() {
-													ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-												}
-
-												if button.clicked() {
-													keybinding.arguments.insert(argument.name.to_owned(), KeybindingArgumentValue::Uuid(sound.id));
-												}
+												button()
+													.size([150., 20.])
+													.text(format!(" {}   {}", sound.icon.as_ref().map_or("", |v| v), sound.name))
+													.text_align(Align2::LEFT_CENTER)
+													.fill(self.config.theme.background_dim())
+													.text_color(self.config.theme.text())
+													.hover_fill(self.config.theme.background_bright())
+													.font_size(14.)
+													.add_to(ui)
+													.on_click(|| {
+														keybinding.arguments.insert(argument.name.to_owned(), KeybindingArgumentValue::Uuid(sound.id));
+													});
 											}
 										},
 									});
+								if argument_selector.response.hovered() {
+									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+								}
 							} else {
 								ui.allocate_ui(vec2(ui.available_width(), 28.), |ui| {
 									ui.take_available_space();
@@ -1870,27 +1871,37 @@ impl App {
 						ui.separator();
 						ui.add_space(4.);
 						ui.vertical_centered(|ui| {
-							let mut delete = None;
 							for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
-								ui.horizontal(|ui| {
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
-									ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(2., self.config.theme.accent());
-									ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-									ui.style_mut().spacing.icon_width = 28.0;
-									ui.style_mut().spacing.icon_width_inner = 16.0;
+								if keybinding.action.force_global() {
+									keybinding.global = true;
+								} else if keybinding.action.force_local() {
+									keybinding.global = false;
+								}
+								let mut is_global = keybinding.global;
 
-									if keybinding.action.force_global() {
-										keybinding.global = true;
-									} else if keybinding.action.force_local() {
-										keybinding.global = false;
-									}
-									let mut is_global = keybinding.global;
-									let checkbox = ui.add_enabled(
-										!keybinding.action.force_global() && !keybinding.action.force_local(),
-										Checkbox::without_text(&mut is_global),
-									);
+								button()
+									.size([28., 28.])
+									.fill(self.config.theme.background_dim())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.text(if is_global { icons::CHECK } else { icons::X })
+									.text_color(if is_global { self.config.theme.green() } else { self.config.theme.red() })
+									.cursor(if keybinding.action.force_global() {
+										CursorIcon::NotAllowed
+									} else {
+										CursorIcon::PointingHand
+									})
+									.hover_fill(if keybinding.action.force_global() {
+										self.config.theme.background_dark()
+									} else {
+										self.config.theme.background_bright()
+									})
+									.add_to(ui)
+									.on_click(|| {
+										if keybinding.action.force_global() {
+											return;
+										}
 
-									if checkbox.changed() {
+										is_global = !is_global;
 										keybinding.global = is_global;
 
 										if let Some(hotkey) = keybinding.key.to_global() {
@@ -1900,46 +1911,53 @@ impl App {
 												let _ = self.hotkey_manager.unregister(hotkey);
 											}
 										}
-									}
 
-									if checkbox.hovered() {
-										ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
+										ui.request_repaint();
+									});
+							}
+						});
+					});
 
-									let delete_button = ui.add_sized(
-										vec2(28., 28.),
-										Button::new(RichText::new(icons::TRASH).size(16.).color(self.config.theme.red())).fill(self.config.theme.background_dim()),
-									);
+					ui.separator();
 
-									if delete_button.hovered() {
-										ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if delete_button.clicked() {
-										delete = Some(keybinding.clone());
-									}
-								});
+					ui.allocate_ui_with_layout(vec2(50., ui.available_height()), Layout::top_down(Align::Min), |ui| {
+						ui.label(RichText::new("").size(16.).color(self.config.theme.text()));
+						ui.separator();
+						ui.add_space(4.);
+						ui.vertical_centered(|ui| {
+							let mut delete = None;
+							for keybinding in self.config.keybindings.lock().unwrap().iter_mut() {
+								button()
+									.size([28., 28.])
+									.text(icons::TRASH)
+									.font_size(16.)
+									.text_color(self.config.theme.red())
+									.fill(self.config.theme.background_dim())
+									.hover_fill(self.config.theme.background_bright())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.add_to(ui)
+									.on_click(|| delete = Some(keybinding.clone()))
 							}
 
 							if let Some(keybinding) = delete {
+								if keybinding.global {
+									keybinding.key.to_global().and_then(|key| self.hotkey_manager.unregister(key).ok());
+								}
 								self.config.keybindings.lock().unwrap().retain(|kb| kb != &keybinding);
 							}
 
 							ui.add_space(8.);
 
-							ui.horizontal(|ui| {
-								ui.add_sized(vec2(28., 28.), Label::new(RichText::new("")));
-
-								let add_button = ui.add_sized(
-									vec2(28., 28.),
-									Button::new(RichText::new(icons::PLUS).size(16.).color(self.config.theme.text())).fill(self.config.theme.background_dim()),
-								);
-
-								if add_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-
-								if add_button.clicked() {
+							button()
+								.size([28., 28.])
+								.text(icons::PLUS)
+								.font_size(16.)
+								.text_color(self.config.theme.text())
+								.stroke(Stroke::new(1., self.config.theme.background_bright()))
+								.fill(self.config.theme.background_dim())
+								.hover_fill(self.config.theme.background_bright())
+								.add_to(ui)
+								.on_click(|| {
 									self.config.keybindings.lock().unwrap().push(Keybinding {
 										key: LocalKeybinding {
 											key: Key::Space,
@@ -1951,8 +1969,7 @@ impl App {
 										id: Uuid::new_v4(),
 										arguments: HashMap::new(),
 									});
-								}
-							});
+								});
 						});
 					});
 				});
@@ -1961,100 +1978,105 @@ impl App {
 	}
 
 	fn draw_appearance_settings(&mut self, ui: &mut Ui) {
-		div().inner_margin(8.).show(ui, |ui| {
+		empty_frame().inner_margin(8.).show(ui, |ui| {
 			ui.columns(2, |ui| {
 				ui[0].vertical(|ui| {
 					ui.horizontal(|ui| {
 						ui.set_max_height(28.);
+						ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
 						ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-						ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
+						ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
 						ui.spacing_mut().interact_size.y = 28.;
 						ui.label(RichText::new("Theme: ").color(self.config.theme.text()).size(16.));
-						ComboBox::from_id_salt("themes")
-							.selected_text(RichText::new(self.config.theme.name()).size(16.).color(self.config.theme.text()))
+						let theme_selector = ComboBox::from_id_salt("themes")
+							.selected_text(
+								RichText::new(format!(
+									"{}{}",
+									self.config.theme.icon().as_ref().map(|icon| format!("{icon}   ")).unwrap_or_default(),
+									self.config.theme.name()
+								))
+								.size(16.)
+								.color(self.config.theme.text()),
+							)
+							.width(200.)
 							.show_ui(ui, |ui| {
 								for theme in THEMES {
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-									let button = ui.add(Button::new(RichText::new(theme.name()).color(self.config.theme.text()).size(16.)));
-
-									if button.clicked() {
-										self.config.theme = theme;
-									}
+									button()
+										.size([200., 20.])
+										.text(format!("  {}{}", theme.icon().as_ref().map(|icon| format!("{icon}   ")).unwrap_or_default(), theme.name()))
+										.text_align(Align2::LEFT_CENTER)
+										.fill(self.config.theme.background_dim())
+										.text_color(self.config.theme.text())
+										.hover_fill(self.config.theme.background_bright())
+										.font_size(14.)
+										.add_to(ui)
+										.on_click(|| self.config.theme = theme);
 								}
 							});
+
+						if theme_selector.response.hovered() {
+							ui.set_cursor_icon(CursorIcon::PointingHand);
+						}
 					});
 
 					ui.add_space(4.);
-					ui.horizontal(|ui| {
-						ui.label(RichText::new("Background opacity: ").size(16.).color(self.config.theme.text()));
 
-						let visuals = ui.visuals_mut();
-						visuals.widgets.inactive.bg_fill = Color32::from_hex("#313244").unwrap();
-						visuals.widgets.hovered.bg_fill = Color32::from_hex("#45475a").unwrap();
-						visuals.widgets.active.bg_fill = Color32::from_hex("#585b70").unwrap();
-
-						visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
-						visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, self.config.theme.accent());
-						visuals.widgets.active.fg_stroke = Stroke::new(2.0, self.config.theme.accent());
-
-						visuals.selection.bg_fill = self.config.theme.accent();
-
-						ui.style_mut().spacing.slider_width = 160.0;
-						ui.style_mut().spacing.slider_rail_height = 4.0;
-						let bg_slider = ui.add(
-							Slider::new(&mut self.config.background_opacity, 0. ..=255.)
-								.integer()
-								.show_value(false)
-								.handle_shape(HandleShape::Circle)
-								.trailing_fill(true),
-						);
-
-						if bg_slider.hovered() {
-							ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-						}
-					});
+					App::draw_volume_slider(ui, "Background opacity:", &mut self.config.background_opacity, 0. ..=255., self.config.theme);
 				});
 			});
 		});
 	}
 
 	fn draw_system_settings(&mut self, ui: &mut Ui) {
-		div().inner_margin(8.).show(ui, |ui| {
+		empty_frame().inner_margin(8.).show(ui, |ui| {
 			ui.vertical(|ui| {
 				ui.horizontal(|ui| {
 					ui.set_max_height(28.);
-					ui.label(RichText::new(format!(" {}   Output device:", icons::HEADSET)).color(self.config.theme.text()).size(16.));
+					ui.label(RichText::new(format!(" {}   Output device:", icons::HEADSET)).color(self.config.theme.text()).size(14.));
 
-					ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-					ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-					ui.spacing_mut().interact_size.y = 28.;
-					ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
+						ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+						ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
 
-					egui::ComboBox::from_id_salt("output-devices")
-						.selected_text(format!("   {}   ", self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()))
+						ui.spacing_mut().interact_size.y = 28.;
+
+					let output_device_selector = egui::ComboBox::from_id_salt("output-devices")
+						.selected_text(RichText::new(format!("   {}   ", self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text()))
+						.width(350.)
 						.show_ui(ui, |ui| {
 							for device in AudioManager::output_devices() {
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-								let output_device_button = ui.add(Button::new(device.description().unwrap().extended().join(", ")));
-
-								if output_device_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-								if output_device_button.clicked() {
-									self.config.output_device = Some(device.clone());
-									self.audio_player.lock().unwrap().set_devices(device, self.config.input_device.as_ref().unwrap().clone(), self.config.virtual_cable_device.as_ref().unwrap().clone());
-								}
+								button()
+									.size([350., 20.])
+									.text(format!("  {}", device.description().unwrap().extended().join(", ")))
+									.text_align(Align2::LEFT_CENTER)
+									.fill(self.config.theme.background_dim())
+									.text_color(self.config.theme.text())
+									.hover_fill(self.config.theme.background_bright())
+									.font_size(14.)
+									.add_to(ui)
+									.on_click(|| {
+										self.config.output_device = Some(device.clone());
+										self.audio_player.lock().unwrap().set_devices(device, self.config.input_device.as_ref().unwrap().clone(), self.config.virtual_cable_device.as_ref().unwrap().clone());
+									});
 							}
 						});
+					if output_device_selector.response.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
 				});
+
+
 				ui.add_space(4.);
 				ui.label(
 					RichText::new(
@@ -2065,31 +2087,40 @@ impl App {
 				ui.add_space(20.);
 				ui.horizontal(|ui| {
 					ui.set_max_height(28.);
-					ui.label(RichText::new(format!(" {}   Input device:", icons::MICROPHONE)).color(self.config.theme.text()).size(16.));
-					ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-					ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-					ui.spacing_mut().interact_size.y = 28.;
-					ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-					egui::ComboBox::new("input-devices", "")
-					.selected_text(format!("   {}   ", self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default()))
+					ui.label(RichText::new(format!(" {}   Input device:", icons::MICROPHONE)).color(self.config.theme.text()).size(14.));
+						ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+						ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
+						ui.spacing_mut().interact_size.y = 28.;
+					let input_device_selector = egui::ComboBox::new("input-devices", "")
+					.width(350.)
+					.selected_text(RichText::new(format!("   {}   ", self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text()))
 					.show_ui(ui, |ui| {
 						for device in AudioManager::input_devices() {
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-							let input_device_button = ui.add(Button::new(device.description().unwrap().extended().join(", ")));
-								if input_device_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-							if input_device_button.clicked() {
-								self.config.input_device = Some(device.clone());
-								self.audio_player.lock().unwrap().set_devices(self.config.output_device.as_ref().unwrap().clone(), device, self.config.virtual_cable_device.as_ref().unwrap().clone());
-							}
+								button()
+									.size([350., 20.])
+									.text(format!("  {}", device.description().unwrap().extended().join(", ")))
+									.text_align(Align2::LEFT_CENTER)
+									.fill(self.config.theme.background_dim())
+									.text_color(self.config.theme.text())
+									.hover_fill(self.config.theme.background_bright())
+									.font_size(14.)
+									.add_to(ui)
+									.on_click(|| {
+										self.config.input_device = Some(device.clone());
+										self.audio_player.lock().unwrap().set_devices(self.config.output_device.as_ref().unwrap().clone(), device, self.config.virtual_cable_device.as_ref().unwrap().clone());
+									});
 						}
 					});
+					if input_device_selector.response.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
 				});
 
 				ui.add_space(4.);
@@ -2105,31 +2136,39 @@ impl App {
 
 				ui.horizontal(|ui| {
 					ui.set_max_height(28.);
-					ui.label(RichText::new(format!(" {}   Virtual cable device:", icons::PLUGS)).color(self.config.theme.text()).size(16.));
-					ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
-					ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., Color32::from_hex("#313244").unwrap());
-					ui.spacing_mut().interact_size.y = 28.;
-					ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-					ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-					egui::ComboBox::new("vb-cable-device", "")
-					.selected_text(format!("   {}   ", self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).show_ui(ui, |ui| {
-						for device in AudioManager::output_devices() {
-									ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.open.bg_fill = self.config.theme.background_dark();
-									ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dark();
-							let virtual_device_button = ui.add(Button::new(RichText::new(device.description().unwrap().extended().join(", ")).color(self.config.theme.text())).fill(self.config.theme.background_dark()).stroke(Stroke::NONE));
-								if virtual_device_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
+					ui.label(RichText::new(format!(" {}   Virtual cable device:", icons::PLUGS)).color(self.config.theme.text()).size(14.));
+						ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+						ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+						ui.visuals_mut().widgets.open.weak_bg_fill = self.config.theme.background_bright();
+						ui.visuals_mut().widgets.open.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
 
-							if virtual_device_button.clicked() {
-								self.config.input_device = Some(device.clone());
-								self.audio_player.lock().unwrap().set_devices(self.config.output_device.as_ref().unwrap().clone(), self.config.input_device.as_ref().unwrap().clone(), device);
-							}
+						ui.spacing_mut().interact_size.y = 28.;
+					let cable_device_selector = egui::ComboBox::new("vb-cable-device", "")
+					.width(350.)
+					.selected_text(RichText::new(format!("   {}   ", self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text())).show_ui(ui, |ui| {
+						for device in AudioManager::output_devices() {
+							button()
+								.size([350., 20.])
+								.text(format!("  {}", device.description().unwrap().extended().join(", ")))
+								.text_align(Align2::LEFT_CENTER)
+								.fill(self.config.theme.background_dim())
+								.text_color(self.config.theme.text())
+								.hover_fill(self.config.theme.background_bright())
+								.font_size(14.)
+								.add_to(ui)
+								.on_click(|| {
+									self.config.input_device = Some(device.clone());
+									self.audio_player.lock().unwrap().set_devices(self.config.output_device.as_ref().unwrap().clone(), self.config.input_device.as_ref().unwrap().clone(), device);
+								});
 						}
 					});
+					if cable_device_selector.response.hovered() {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
 				});
 
 				ui.add_space(4.);
@@ -2140,6 +2179,9 @@ impl App {
 					)
 					.color(self.config.theme.text_dim()),
 				);
+
+				ui.add_space(4.);
+
 			});
 		});
 	}
@@ -2149,41 +2191,60 @@ impl App {
 		let sound_node = sb.get_sound_node(id).unwrap().clone();
 
 		ui.vertical(|ui| {
-			let label = if let Some(icon) = sound_node.icon() {
-				format!(" {}   {}", icon, sound_node.name())
+			let mut label = if let Some(icon) = sound_node.icon() {
+				format!("   {}   {}", icon, sound_node.name())
 			} else {
 				format!("    {}", sound_node.name())
 			};
-			let sound_button = ui.add(
-				Button::new(
-					RichText::new(label)
-						.color(
-							if let AppScreen::Settings(SettingsTab::Sounds(Some(id))) = &self.screen
-								&& id == &sound_node.id()
-							{
-								self.config.theme.accent()
-							} else {
-								self.config.theme.text()
-							},
-						)
-						.size(16.),
-				)
-				.fill(self.config.theme.background())
-				.stroke(Stroke::NONE),
-			);
 
-			if sound_button.hovered() {
-				ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+			if sound_node.is_group() {
+				let icon = if self.open_groups.contains(&id) { icons::CARET_DOWN } else { icons::CARET_RIGHT };
+				label = format!("{label}      {icon}");
 			}
 
+			let sound_button = ui.add(
+				button()
+					.size([200., 22.])
+					.text(label)
+					.font_size(14.)
+					.text_align(Align2::LEFT_CENTER)
+					.hover_fill(self.config.theme.background_bright())
+					.stroke(Stroke::NONE)
+					.fill(
+						if let AppScreen::Settings(SettingsTab::Sounds(Some(id))) = &self.screen
+							&& id == &sound_node.id()
+						{
+							self.config.theme.background_bright()
+						} else {
+							Color32::TRANSPARENT
+						},
+					)
+					.text_color(
+						if let AppScreen::Settings(SettingsTab::Sounds(Some(id))) = &self.screen
+							&& id == &sound_node.id()
+						{
+							self.config.theme.text_bright()
+						} else {
+							self.config.theme.text()
+						},
+					),
+			);
+
 			if sound_button.clicked() {
+				if sound_node.is_group() {
+					if self.open_groups.contains(&id) {
+						self.open_groups.remove(&id);
+					} else {
+						self.open_groups.insert(id);
+					}
+				}
 				self.screen = AppScreen::Settings(SettingsTab::Sounds(Some(id)));
 			}
 
-			ui.add_space(3.);
-
-			if let SoundTreeNode::Group(group) = sound_node {
-				eframe::egui::Frame::NONE
+			if let SoundTreeNode::Group(group) = sound_node
+				&& self.open_groups.contains(&id)
+			{
+				empty_frame()
 					.inner_margin(Margin {
 						left: 24,
 						right: 0,
@@ -2192,7 +2253,11 @@ impl App {
 					})
 					.show(ui, |ui| {
 						ui.vertical(|ui| {
-							for child_node in &group.sounds {
+							for child_node in group.sounds.iter().filter(|node| SoundTreeNode::is_group(node)) {
+								self.draw_sound_node(ui, child_node.id());
+							}
+
+							for child_node in group.sounds.iter().filter(|node| SoundTreeNode::is_sound(node)) {
 								self.draw_sound_node(ui, child_node.id());
 							}
 						});
@@ -2346,34 +2411,32 @@ impl App {
 		result
 	}
 
-	fn draw_volume_slider(ui: &mut Ui, label_text: &str, value: &mut u8, theme: &Theme) {
+	fn draw_volume_slider<Num: emath::Numeric + Into<f32>>(ui: &mut Ui, label_text: &str, value: &mut Num, range: impl Into<RangeInclusive<Num>> + Clone, theme: &Theme) {
 		ui.horizontal(|ui| {
 			ui.set_max_height(28.);
 			ui.set_min_height(28.);
 			ui.label(RichText::new(label_text).size(16.).color(theme.text()));
 			let visuals = ui.visuals_mut();
-			visuals.widgets.inactive.bg_fill = Color32::from_hex("#313244").unwrap();
-			visuals.widgets.hovered.bg_fill = Color32::from_hex("#45475a").unwrap();
-			visuals.widgets.active.bg_fill = Color32::from_hex("#585b70").unwrap();
-
-			visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
-			visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, theme.accent());
-			visuals.widgets.active.fg_stroke = Stroke::new(2.0, theme.accent());
+			visuals.widgets.inactive.bg_fill = theme.background_bright();
+			visuals.widgets.hovered.bg_fill = theme.text_bright();
+			visuals.widgets.active.bg_fill = theme.text_bright();
 
 			visuals.selection.bg_fill = theme.accent();
 
 			ui.style_mut().spacing.slider_width = 160.0;
 			ui.style_mut().spacing.slider_rail_height = 4.0;
 
-			let slider_response = ui.add(Slider::new(value, 0..=100).show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
+			let slider_response = ui.add(Slider::new(value, range.clone()).show_value(false).handle_shape(HandleShape::Circle).trailing_fill(true));
 
 			if slider_response.hovered() {
 				ui.set_cursor_icon(CursorIcon::PointingHand);
 			}
 
 			ui.add_space(8.);
+			let range = range.into();
+			let value: f32 = (*value).into();
 			ui.label(
-				RichText::new(format!("{}%", value))
+				RichText::new(format!("{}%", (value / ((*range.end()).into() - (*range.start()).into()) * 100.) as usize))
 					.size(14.)
 					.color(if slider_response.hovered() { theme.accent() } else { theme.text_dim() }),
 			);
@@ -2399,15 +2462,13 @@ impl App {
 	fn run_action(&mut self, action: UiAction, ui: &mut Ui, arguments: Option<HashMap<String, KeybindingArgumentValue>>) {
 		match action {
 			UiAction::OpenSoundboard => {
-				self.visible = true;
-				ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
+				self.show(ui);
 			},
 			UiAction::ToggleSoundboard => {
 				if self.visible {
 					self.hide(ui);
 				} else {
-					self.visible = true;
-					ui.send_viewport_cmd(ViewportCommand::MousePassthrough(false));
+					self.show(ui);
 				}
 			},
 			UiAction::CloseSoundboard => {
@@ -2485,6 +2546,16 @@ impl eframe::App for App {
 	}
 }
 
+/// Rotates a triangle clockwise around it's centroid by some angle.
+///
+/// # Parameters
+///
+/// - `vertices` - The vertices of the original triangle
+/// - `angle` - The angle in radians to rotate clockwise
+///
+/// # Returns
+///
+/// The vertices of the rotated triangle
 fn rotate_triangle_around_centroid(vertices: [Pos2; 3], angle: f32) -> Vec<Pos2> {
 	let centroid = Pos2::new((vertices[0].x + vertices[1].x + vertices[2].x) / 3.0, (vertices[0].y + vertices[1].y + vertices[2].y) / 3.0);
 
@@ -2499,6 +2570,15 @@ fn rotate_triangle_around_centroid(vertices: [Pos2; 3], angle: f32) -> Vec<Pos2>
 		.collect()
 }
 
+/// Picks a random cute message for the upper left corner of the screen.
+///
+/// # Parameters
+///
+/// - `rng` - The shared `ThreadRng` instance for random generation
+///
+/// # Returns
+///
+/// The chosen message
 fn random_cute_message(rng: &mut ThreadRng) -> &'static str {
 	[
 		"have a pawesome day :3",
@@ -2509,15 +2589,44 @@ fn random_cute_message(rng: &mut ThreadRng) -> &'static str {
 		"ruff :3",
 		"you are loved :D",
 		"time to play some stupid sounds >:3",
-		"please call me i guarantee i miss u right now",
+		"CALL ME I MISS U CALL ME",
 		"ROT AND DIE!!!!!!!!!",
 		"ur an idiot ^_^",
 		"i can just really put whatever here n u have to see it huh",
+		"shouts to grandma elaine",
+		"b-baka!! -.-",
+		"one more game ONE MORE GAME",
+		"hhhhhhhhhhhhhhhhhhhh",
+		"chatgpt which sound should i play",
+		"made with alittle love n alotta hate",
+		"hello zackaroni n cheese ^_^",
+		"meow.......",
+		"TIGHT TIGHT TIGHT BLUE YELLOW PINK",
+		"bye squidward! byye squidward.......",
+		"first i draw this head",
+		"all bubble blowing babies will be beaten senseless by every able bodied patron in the bar",
+		"but dont think we dont know how to WEEEEEEED em out!!",
+		"its strange what desire will make foolish people do",
+		"do i deserve this euphoric feeling?",
+		"MOO!!!!!!!!!",
+		"a stove.. is a stove..... no matter where you GOOOUUOOUOO",
+		"i think there are some things that are understood only immediately or never",
+		"\"when im really happy, i cant help but think about dying\"",
+		"feeling like a passenger when all im meant to do is drive",
+		"FUCKING LOSER !!!!!!!!!!!!",
+		"im a chud im a chud im a fat little chud",
+		"playing val all dayyy till the sun comes uppp!!!",
+		"smoke more smoke more smoke more",
+		"kills u",
+		"BUY THAT OP N BLOW HIS SHIT SMOOVE OFF!!!!",
+		"i luv u <3 :D",
+		"dont do that DONT DOO THATTTT WE WERE HAVING A GOOD DAYYY",
+		"i care about u so much sob",
 	]
 	.choose(rng)
 	.unwrap()
 }
 
-fn div() -> eframe::egui::Frame {
+fn empty_frame() -> eframe::egui::Frame {
 	eframe::egui::Frame::NONE
 }
