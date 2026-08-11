@@ -525,6 +525,7 @@ impl App {
 												if self.settings_sound_page == self.config.soundboard.pages.len() {
 													self.settings_sound_page -= 1;
 												}
+												self.page = 0;
 												let _ = self.config.save_to_disk();
 												ui[1].request_repaint();
 											}
@@ -2300,7 +2301,7 @@ impl App {
 
 				ui.label(
 					RichText::new(
-						"This is a virtual device that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set this as the input device in your chat app (discord, teams, etc.) for others to be able to hear your sound effects.",
+						"This is a virtual device that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set your microphone device in your chat app (discord, teams, etc.) to \"CABLE Output\" for others to be able to hear your sound effects.",
 					)
 					.color(self.config.theme.text_dim()),
 				);
@@ -2423,7 +2424,7 @@ impl App {
 			}
 		});
 
-		if !fired_keys.is_empty() {
+		if self.visible && !fired_keys.is_empty() {
 			let bindings = self.config.keybindings.lock().unwrap().clone();
 			for (key, behavior) in fired_keys {
 				for keybinding in &bindings {

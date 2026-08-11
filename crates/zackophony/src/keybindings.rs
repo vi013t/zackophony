@@ -113,11 +113,19 @@ impl Keybinding {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct LocalKeybinding {
 	pub key: Key,
 	pub modifiers: Modifiers,
 }
+
+impl PartialEq for LocalKeybinding {
+	fn eq(&self, other: &Self) -> bool {
+		self.key == other.key && self.modifiers.ctrl == other.modifiers.ctrl && self.modifiers.alt == other.modifiers.alt && self.modifiers.shift == other.modifiers.shift
+	}
+}
+
+impl Eq for LocalKeybinding {}
 
 impl LocalKeybinding {
 	pub fn to_global(&self) -> Option<HotKey> {
