@@ -564,6 +564,7 @@ pub struct SoundboardConfig {
 	pub(crate) background_opacity: f32,
 	pub(crate) soundboard: Soundboard,
 	pub(crate) keybindings: Arc<Mutex<Vec<Keybinding>>>,
+	pub(crate) ui_volume: f32,
 }
 
 impl Default for SoundboardConfig {
@@ -596,6 +597,7 @@ impl Default for SoundboardConfig {
 					.is_ok_and(|id| json.get("input_device").and_then(|device| device.as_str()).is_some_and(|device| device == id.to_string()))
 			});
 			let background_opacity = json.get("background_opacity").and_then(|opacity| opacity.as_u64()).map(|i| i as f32);
+			let ui_volume = json.get("ui_volume").and_then(|opacity| opacity.as_f64()).map(|i| i as f32).unwrap_or(0.1);
 			let soundboard = json.get("soundboard").and_then(|sb| {
 				let soundboard = Soundboard::deserialize(&sb.to_string());
 				if let Err(e) = &soundboard {
@@ -621,6 +623,7 @@ impl Default for SoundboardConfig {
 					input_device: input_device.or_else(AudioManager::default_input_device),
 					output_device: output_device.or_else(AudioManager::default_output_device),
 					background_opacity,
+					ui_volume,
 					soundboard,
 				};
 			};
@@ -719,6 +722,7 @@ impl Default for SoundboardConfig {
 			input_device: AudioManager::default_input_device(),
 			output_device: AudioManager::default_output_device(),
 			background_opacity: 100.,
+			ui_volume: 0.1,
 			soundboard,
 		};
 		let _ = preferences.save_to_disk();

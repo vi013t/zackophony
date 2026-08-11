@@ -46,12 +46,12 @@ use eframe::{
 		ViewportBuilder,
 		ViewportCommand,
 		Visuals,
-		style::HandleShape,
+		style::{HandleShape, StyleModifier},
 		vec2,
 	},
 	emath::{self, Rot2},
 };
-use egui_div::{Div, Gradient, GradientDirection, Listeners, button, div};
+use egui_div::{Gradient, GradientDirection, Listeners, button, div};
 use egui_phosphor::regular as icons;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use rand::{rngs::ThreadRng, seq::IndexedRandom as _};
@@ -441,7 +441,7 @@ impl App {
 						.fill(self.config.theme.background())
 						.inner_margin(16.)
 						.corner_radius(8.)
-						.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
+						.stroke(Stroke::new(1., self.config.theme.background_bright()))
 						.shadow(Shadow {
 							offset: [0, 0],
 							blur: 8,
@@ -583,22 +583,23 @@ impl App {
 
 	pub fn draw_delete_sound_popup(&mut self, ui: &mut Ui) {
 		let parent = ui.viewport_rect();
-		let size = vec2(300., 200.);
+		let size = vec2(300., 130.);
 		let child = Rect::from_center_size(parent.center(), size);
 		ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
 			empty_frame().fill(Color32::TRANSPARENT).show(ui, |ui| {
 				ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-					empty_frame()
-						.fill(self.config.theme.background_dark())
+					div()
+						.size(size)
+						.fill(self.config.theme.background())
+						.inner_margin(16.)
+						.corner_radius(8.)
+						.stroke(Stroke::new(1., self.config.theme.background_bright()))
 						.shadow(Shadow {
 							offset: [0, 0],
 							blur: 8,
 							spread: 2,
 							color: Color32::BLACK,
 						})
-						.inner_margin(16.)
-						.corner_radius(8.)
-						.stroke(Stroke::new(1., Color32::from_hex("#45475a").unwrap()))
 						.show(ui, |ui| {
 							ui.vertical_centered_justified(|ui| {
 								ui.label(
@@ -608,53 +609,53 @@ impl App {
 								);
 								ui.add_space(16.);
 								ui.columns(2, |ui| {
-									let cancel_button = ui[0].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Cancel").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.red())
-											.corner_radius(4.),
-									);
+									button()
+										.size([125., 28.])
+										.text("Cancel")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.pink())
+												.color2(self.config.theme.red())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[0])
+										.on_click(|| self.popup = None);
 
-									if cancel_button.hovered() {
-										ui[0].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if cancel_button.clicked() {
-										self.popup = None;
-									}
-
-									let confirm_button = ui[1].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Confirm").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.green())
-											.corner_radius(4.),
-									);
-
-									if confirm_button.hovered() {
-										ui[1].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if confirm_button.clicked() {
-										match &self.screen {
-											AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) => {
-												self.config.soundboard.remove_sound_node(*sound_id);
-												let _ = self.config.save_to_disk();
-											},
-											AppScreen::Soundboard => {
-												if let Some(id) = self.right_clicked_id {
-													self.config.soundboard.remove_sound_node(id);
+									button()
+										.size([125., 28.])
+										.text("Confirm")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.teal())
+												.color2(self.config.theme.green())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[1])
+										.on_click(|| {
+											match &self.screen {
+												AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) => {
+													self.config.soundboard.remove_sound_node(*sound_id);
 													let _ = self.config.save_to_disk();
-												}
-											},
-											_ => {},
-										}
+												},
+												AppScreen::Soundboard => {
+													if let Some(id) = self.right_clicked_id {
+														self.config.soundboard.remove_sound_node(id);
+														let _ = self.config.save_to_disk();
+													}
+												},
+												_ => {},
+											}
 
-										self.popup = None;
-										self.screen = match &self.screen {
-											AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
-											_ => self.screen,
-										};
-									}
+											self.popup = None;
+											self.screen = match &self.screen {
+												AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
+												_ => self.screen,
+											};
+										});
 								});
 							});
 						})
@@ -812,7 +813,7 @@ impl App {
 			if self.hovered_path.is_some() {
 				ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
 				if self.hovered_path != self.last_hovered_path {
-					let _ = self.audio_player.lock().unwrap().play_ui_sound(UiSound::Hover);
+					let _ = self.audio_player.lock().unwrap().play_ui_sound(UiSound::Hover, self.config.ui_volume);
 				}
 			}
 			self.last_hovered_path = self.hovered_path.clone();
@@ -1371,21 +1372,15 @@ impl App {
 
 								ui.add_space(4.);
 
-								let icon_button = ui.add(
-									div()
-										.size([28., 28.])
-										.text(sound.icon.as_ref().cloned().unwrap_or_default())
-										.cursor(CursorIcon::PointingHand)
-										.text_align(Align2::CENTER_CENTER)
-										.fill(self.config.theme.background_dim())
-										.text_color(self.config.theme.text())
-										.stroke(Stroke::new(1., self.config.theme.background_bright()))
-										.corner_radius(4.),
-								);
-
-								if icon_button.clicked() {
-									self.icon_picker_coords = ui.pointer_latest_pos();
-								}
+								button()
+									.size([28., 28.])
+									.text(sound.icon.as_ref().cloned().unwrap_or_default())
+									.fill(self.config.theme.background_dim())
+									.hover_fill(self.config.theme.background_bright())
+									.text_color(self.config.theme.text())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.add_to(ui)
+									.on_click(|| self.icon_picker_coords = ui.pointer_latest_pos());
 							});
 
 							ui.add_space(4.);
@@ -1456,25 +1451,15 @@ impl App {
 
 								ui.add_space(4.);
 
-								let icon_button = ui.add(
-									div()
-										.size([28., 28.])
-										.text(group.icon.as_ref().cloned().unwrap_or_default())
-										.cursor(CursorIcon::PointingHand)
-										.text_align(Align2::CENTER_CENTER)
-										.fill(self.config.theme.background_dim())
-										.text_color(self.config.theme.text())
-										.stroke(Stroke::new(1., self.config.theme.background_bright()))
-										.corner_radius(4.),
-								);
-
-								if icon_button.hovered() {
-									ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-								}
-
-								if icon_button.clicked() {
-									self.icon_picker_coords = ui.pointer_latest_pos();
-								}
+								button()
+									.size([28., 28.])
+									.text(group.icon.as_ref().cloned().unwrap_or_default())
+									.fill(self.config.theme.background_dim())
+									.hover_fill(self.config.theme.background_bright())
+									.text_color(self.config.theme.text())
+									.stroke(Stroke::new(1., self.config.theme.background_bright()))
+									.add_to(ui)
+									.on_click(|| self.icon_picker_coords = ui.pointer_latest_pos());
 							});
 
 							ui.add_space(ui.available_height() - 24.);
@@ -1608,19 +1593,25 @@ impl App {
 								.filter(|(name, _icon)| name.replace(" ", "").to_lowercase().contains(&self.icon_picker_search_text.to_lowercase().replace("_", "")))
 								.collect::<Vec<_>>();
 
-							ui.spacing_mut().interact_size.y = 28.;
-
-							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background();
-							ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background();
-							ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background();
-							ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background();
-							ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background();
-							ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background();
-
-							ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
-							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
 							ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
-							ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1., self.config.theme.text_bright());
+							ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+							ui.visuals_mut().widgets.active.bg_stroke = Stroke::new(1., self.config.theme.background_bright());
+
+							ui.visuals_mut().widgets.inactive.weak_bg_fill = self.config.theme.background_dim();
+							ui.visuals_mut().widgets.hovered.weak_bg_fill = self.config.theme.background_dim();
+							ui.visuals_mut().widgets.active.weak_bg_fill = self.config.theme.background_dim();
+
+							ui.visuals_mut().widgets.inactive.bg_fill = self.config.theme.background_dim();
+							ui.visuals_mut().widgets.hovered.bg_fill = self.config.theme.background_dim();
+							ui.visuals_mut().widgets.active.bg_fill = self.config.theme.background_dim();
+
+							ui.visuals_mut().extreme_bg_color = self.config.theme.background_dim();
+
+							ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1., self.config.theme.text());
+							ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1., self.config.theme.text());
+							ui.visuals_mut().widgets.active.fg_stroke = Stroke::new(1., self.config.theme.text());
+
+							ui.spacing_mut().interact_size.y = 28.;
 
 							ui.add_sized(
 								vec2((28. + 7.) * columns as f32, 28.),
@@ -1640,29 +1631,22 @@ impl App {
 											let index = row * columns + column;
 											if index < icons.len() {
 												let icon = icons[index].1;
-												let icon_button = ui.add(
-													div()
-														.text(icon)
-														.size([28., 28.])
-														.text_color(self.config.theme.text())
-														.fill(self.config.theme.background())
-														.corner_radius(4.)
-														.text_align(Align2::CENTER_CENTER)
-														.hover_fill(self.config.theme.background_bright())
-														.stroke(Stroke::new(1., self.config.theme.background_bright())),
-												);
-
-												if icon_button.hovered() {
-													ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-												}
-
-												if icon_button.clicked()
-													&& let AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) = &self.screen
-													&& let Some(sound) = self.config.soundboard.get_sound_node_mut(*sound_id)
-												{
-													sound.set_icon(icon);
-													self.icon_picker_coords = None;
-												}
+												button()
+													.text(icon)
+													.size([28., 28.])
+													.text_color(self.config.theme.text())
+													.fill(self.config.theme.background())
+													.hover_fill(self.config.theme.background_bright())
+													.stroke(Stroke::new(1., self.config.theme.background_bright()))
+													.add_to(ui)
+													.on_click(|| {
+														if let AppScreen::Settings(SettingsTab::Sounds(Some(sound_id))) = &self.screen
+															&& let Some(sound) = self.config.soundboard.get_sound_node_mut(*sound_id)
+														{
+															sound.set_icon(icon);
+															self.icon_picker_coords = None;
+														}
+													});
 											}
 										}
 									});
@@ -1737,12 +1721,13 @@ impl App {
 							ui.spacing_mut().interact_size.y = 28.;
 							let action_selector = ComboBox::from_id_salt(format!("hotkey-action-{}", keybinding.id))
 								.selected_text(RichText::new(keybinding.action.name()).size(14.).color(self.config.theme.text()))
+								.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 								.width(ui.available_width())
 								.show_ui(ui, |ui| {
 									for action in UiAction::iter() {
 										button()
 											.size([175., 20.])
-											.text(action.name())
+											.text(format!("  {}", action.name()))
 											.text_align(Align2::LEFT_CENTER)
 											.fill(self.config.theme.background_dim())
 											.text_color(self.config.theme.text())
@@ -1777,6 +1762,7 @@ impl App {
 							ui.spacing_mut().interact_size.y = 28.;
 							let behavior_selector = ComboBox::from_id_salt(format!("hotkey-behavior-{}", keybinding.id))
 								.selected_text(RichText::new(keybinding.behavior.name()).size(14.).color(self.config.theme.text()))
+								.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 								.width(ui.available_width())
 								.show_ui(ui, |ui| {
 									for behavior in HotkeyBehavior::iter() {
@@ -1784,6 +1770,7 @@ impl App {
 											.text(format!("  {}", behavior.name()))
 											.size([100., 20.])
 											.font_size(14.)
+											.hover_fill(self.config.theme.background_bright())
 											.text_color(self.config.theme.text())
 											.text_align(Align2::LEFT_CENTER)
 											.fill(self.config.theme.background_dim())
@@ -1830,6 +1817,7 @@ impl App {
 											.size(14.)
 											.color(self.config.theme.text()),
 									)
+									.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 									.width(ui.available_width())
 									.show_ui(ui, |ui| match argument.argument_type {
 										ArgumentType::Sound => {
@@ -2004,6 +1992,7 @@ impl App {
 								.size(16.)
 								.color(self.config.theme.text()),
 							)
+							.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 							.width(200.)
 							.show_ui(ui, |ui| {
 								for theme in THEMES {
@@ -2054,6 +2043,7 @@ impl App {
 					let output_device_selector = egui::ComboBox::from_id_salt("output-devices")
 						.selected_text(RichText::new(format!("   {}   ", self.config.output_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text()))
 						.width(350.)
+							.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 						.show_ui(ui, |ui| {
 							for device in AudioManager::output_devices() {
 								button()
@@ -2101,6 +2091,7 @@ impl App {
 					let input_device_selector = egui::ComboBox::new("input-devices", "")
 					.width(350.)
 					.selected_text(RichText::new(format!("   {}   ", self.config.input_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text()))
+							.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 					.show_ui(ui, |ui| {
 						for device in AudioManager::input_devices() {
 								button()
@@ -2149,6 +2140,7 @@ impl App {
 						ui.spacing_mut().interact_size.y = 28.;
 					let cable_device_selector = egui::ComboBox::new("vb-cable-device", "")
 					.width(350.)
+							.popup_style(StyleModifier::new(|style| style.visuals.window_fill = self.config.theme.background_dim()))
 					.selected_text(RichText::new(format!("   {}   ", self.config.virtual_cable_device.as_ref().and_then(|device| device.description().map(|desc| desc.extended().join(", ")).ok()).unwrap_or_default())).color(self.config.theme.text())).show_ui(ui, |ui| {
 						for device in AudioManager::output_devices() {
 							button()
@@ -2180,8 +2172,9 @@ impl App {
 					.color(self.config.theme.text_dim()),
 				);
 
-				ui.add_space(4.);
+				ui.add_space(16.);
 
+				App::draw_volume_slider(ui, "UI Volume:", &mut self.config.ui_volume, 0. ..= 5., self.config.theme);
 			});
 		});
 	}
@@ -2309,20 +2302,19 @@ impl App {
 
 					ui.add_space(100.);
 
-					let page_right = ui.add(
-						Button::new(RichText::new(icons::CARET_RIGHT).color(self.config.theme.accent()).size(16.))
-							.fill(Color32::from_hex("#11111bcc").unwrap())
-							.min_size(Vec2::splat(30.))
-							.corner_radius(15.),
-					);
-
-					if ui.rect_contains_pointer(page_right.rect) {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-
-					if page_right.clicked() && self.page < self.config.soundboard.pages.len() - 1 {
-						self.page += 1;
-					}
+					button()
+						.text(icons::CARET_RIGHT)
+						.text_color(self.config.theme.accent())
+						.font_size(16.)
+						.size([30., 30.])
+						.corner_radius(15.)
+						.fill(self.config.theme.sound_background())
+						.add_to(ui)
+						.on_click(|| {
+							if self.page < self.config.soundboard.pages.len() - 1 {
+								self.page += 1;
+							}
+						});
 				});
 			});
 	}

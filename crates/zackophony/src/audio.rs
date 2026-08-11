@@ -172,8 +172,8 @@ impl AudioManager {
 		Ok(())
 	}
 
-	pub fn play_ui_sound(&self, sound: UiSound) -> anyhow::Result<()> {
-		self.monitor_sink.mixer().add(self.ui_sounds.get(&sound).unwrap().clone().amplify(0.1));
+	pub fn play_ui_sound(&self, sound: UiSound, volume: f32) -> anyhow::Result<()> {
+		self.monitor_sink.mixer().add(self.ui_sounds.get(&sound).unwrap().clone().amplify(volume));
 		Ok(())
 	}
 
