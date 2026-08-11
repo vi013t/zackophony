@@ -9,7 +9,6 @@ use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 static EMBEDDED_APP: &[u8] = include_bytes!("../../../target/release/zackophony.exe");
 
 fn main() -> anyhow::Result<()> {
-	// install_vbcable()?;
 	install_zackophony()?;
 	create_start_menu_shortcut()?;
 	register_startup()?;
@@ -40,20 +39,6 @@ fn create_start_menu_shortcut() -> anyhow::Result<()> {
 
 	let link = ShellLink::new(&target)?;
 	link.create_lnk(shortcut_path)?;
-
-	Ok(())
-}
-
-fn install_vbcable() -> std::io::Result<()> {
-	runas::Command::new(
-		std::env::current_exe()?
-			.parent()
-			.unwrap()
-			.join("Resources")
-			.join("Virtual Cable Driver")
-			.join("VBCABLE_Setup_x64.exe"),
-	)
-	.status()?;
 
 	Ok(())
 }
