@@ -53,7 +53,12 @@ use eframe::{
 };
 use egui_div::{Gradient, GradientDirection, Listeners, button, div};
 use egui_phosphor::regular as icons;
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use global_hotkey::{
+	GlobalHotKeyEvent,
+	GlobalHotKeyManager,
+	HotKeyState,
+	hotkey::{Code, HotKey},
+};
 use rand::{rngs::ThreadRng, seq::IndexedRandom as _};
 use rodio::DeviceTrait;
 use strum::IntoEnumIterator;
@@ -145,6 +150,7 @@ pub struct App {
 	visible: bool,
 	screen: AppScreen,
 
+	failsafe_hotkey: HotKey,
 	hotkey_manager: GlobalHotKeyManager,
 	rx: Receiver<UiAction>,
 	rng: ThreadRng,
@@ -174,12 +180,26 @@ pub struct App {
 
 impl App {
 	fn new(rx: Receiver<UiAction>) -> anyhow::Result<App> {
-		let config = SoundboardConfig::default();
+		let mut config = SoundboardConfig::default();
+
+		if config.input_device.is_none() {
+			config.input_device = AudioManager::default_input_device();
+		}
+
+		if config.output_device.is_none() {
+			config.output_device = AudioManager::default_output_device();
+		}
+
+		if config.virtual_cable_device.is_none() {
+			config.virtual_cable_device = AudioManager::default_virtual_device();
+		}
+
 		let mut audio_player = AudioManager::new(
 			config.input_device.clone().unwrap(),
 			config.output_device.clone().unwrap(),
 			config.virtual_cable_device.clone().unwrap(),
 		)?;
+
 		for sound in config.soundboard.sounds() {
 			audio_player.upload_user_sound(&sound.name, sound.data.clone())?;
 		}
@@ -193,12 +213,20 @@ impl App {
 			}
 		}
 
+		// incase his stupidass deletes the "open soundboard" hotkey, leave a permanent failsafe one available
+		let failsafe_hotkey = HotKey::new(
+			Some(global_hotkey::hotkey::Modifiers::CONTROL | global_hotkey::hotkey::Modifiers::SHIFT | global_hotkey::hotkey::Modifiers::ALT),
+			Code::F1,
+		);
+		let _ = hotkey_manager.register(failsafe_hotkey);
+
 		let mut rng = rand::rng();
 
 		Ok(App {
 			hotkey_manager,
 			screen: AppScreen::Soundboard,
 			config,
+			failsafe_hotkey,
 			audio_player: Arc::new(Mutex::new(audio_player)),
 			cute_message: random_cute_message(&mut rng),
 			rng,
@@ -230,6 +258,7 @@ impl App {
 	fn hide(&mut self, ui: &mut Ui) {
 		self.visible = false;
 		self.screen = AppScreen::Soundboard;
+		self.page = 0;
 		ui.send_viewport_cmd(ViewportCommand::MousePassthrough(true));
 
 		// clear popups or state caches
@@ -285,6 +314,7 @@ impl App {
 				let is_recording = app.is_recording.clone();
 				let keybindings = app.config.keybindings.clone();
 				let keybinding_arguments = app.keybinding_arguments.clone();
+				let failsafe_hotkey = app.failsafe_hotkey;
 
 				std::thread::spawn(move || {
 					let receiver = GlobalHotKeyEvent::receiver();
@@ -293,6 +323,11 @@ impl App {
 						if let Ok(event) = receiver.recv() {
 							if is_recording.load(Ordering::Relaxed) {
 								continue;
+							}
+
+							// failsafe hotkey
+							if event.id() == failsafe_hotkey.id() && event.state == HotKeyState::Pressed {
+								let _ = tx.send(UiAction::ToggleSoundboard);
 							}
 
 							for keybinding in keybindings.lock().unwrap().iter() {
@@ -432,12 +467,13 @@ impl App {
 
 	pub fn draw_delete_page_popup(&mut self, ui: &mut Ui) {
 		let parent = ui.viewport_rect();
-		let size = vec2(300., 250.);
+		let size = vec2(300., 130.);
 		let child = Rect::from_center_size(parent.center(), size);
 		ui.scope_builder(UiBuilder::new().max_rect(parent), |ui| {
 			empty_frame().fill(Color32::TRANSPARENT).show(ui, |ui| {
 				ui.scope_builder(UiBuilder::new().max_rect(child), |ui| {
-					empty_frame()
+					div()
+						.size(size)
 						.fill(self.config.theme.background())
 						.inner_margin(16.)
 						.corner_radius(8.)
@@ -452,53 +488,53 @@ impl App {
 							ui.vertical_centered_justified(|ui| {
 								ui.label(
 									RichText::new("Are you sure you want to delete this page? All sounds and groups inside will be deleted. This can't be undone.")
-										.size(16.)
+										.size(14.)
 										.color(self.config.theme.text()),
 								);
 								ui.add_space(16.);
 								ui.columns(2, |ui| {
-									let cancel_button = ui[0].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Cancel").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.red())
-											.corner_radius(4.),
-									);
+									button()
+										.size([125., 28.])
+										.text("Cancel")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.pink())
+												.color2(self.config.theme.red())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[0])
+										.on_click(|| self.popup = None);
 
-									if cancel_button.hovered() {
-										ui[0].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if cancel_button.clicked() {
-										self.popup = None;
-									}
-
-									let confirm_button = ui[1].add_sized(
-										[100., 28.],
-										Button::new(RichText::new("Confirm").size(16.).color(self.config.theme.background_dark()))
-											.fill(self.config.theme.green())
-											.corner_radius(4.),
-									);
-
-									if confirm_button.hovered() {
-										ui[1].set_cursor_icon(egui::CursorIcon::PointingHand);
-									}
-
-									if confirm_button.clicked() {
-										if let AppScreen::Settings(SettingsTab::Sounds(_)) = &self.screen {
-											self.config.soundboard.pages.remove(self.settings_sound_page);
-											if self.settings_sound_page == self.config.soundboard.pages.len() {
-												self.settings_sound_page -= 1;
+									button()
+										.size([125., 28.])
+										.text("Confirm")
+										.font_size(14.)
+										.text_color(self.config.theme.background_dark())
+										.fill(
+											Gradient::new()
+												.color1(self.config.theme.teal())
+												.color2(self.config.theme.green())
+												.direction(GradientDirection::ToBottomRight),
+										)
+										.add_to(&mut ui[1])
+										.on_click(|| {
+											if let AppScreen::Settings(SettingsTab::Sounds(_)) = &self.screen {
+												self.config.soundboard.pages.remove(self.settings_sound_page);
+												if self.settings_sound_page == self.config.soundboard.pages.len() {
+													self.settings_sound_page -= 1;
+												}
+												let _ = self.config.save_to_disk();
+												ui[1].request_repaint();
 											}
-											let _ = self.config.save_to_disk();
-											ui[1].request_repaint();
-										}
 
-										self.popup = None;
-										self.screen = match &self.screen {
-											AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
-											_ => self.screen,
-										};
-									}
+											self.popup = None;
+											self.screen = match &self.screen {
+												AppScreen::Settings(SettingsTab::Sounds(Some(_))) => AppScreen::Settings(SettingsTab::Sounds(None)),
+												_ => self.screen,
+											};
+										});
 								});
 							});
 						})
@@ -604,7 +640,7 @@ impl App {
 							ui.vertical_centered_justified(|ui| {
 								ui.label(
 									RichText::new("Are you sure you want to delete this sound? This can't be undone.")
-										.size(16.)
+										.size(14.)
 										.color(self.config.theme.text()),
 								);
 								ui.add_space(16.);
@@ -664,6 +700,79 @@ impl App {
 		});
 	}
 
+	fn draw_page_menu(&mut self, ui: &mut Ui) {
+		Area::new("page_name".into())
+			.order(egui::Order::Middle)
+			.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0))
+			.show(ui, |ui| {
+				ui.horizontal(|ui| {
+					let mut page_name = self.config.soundboard.pages[self.page].name.clone();
+					if page_name.is_empty() {
+						page_name = format!("Page {}", self.page + 1);
+					}
+					ui.label(RichText::new(page_name).color(self.config.theme.accent()));
+				});
+			});
+
+		Area::new("page_selector".into())
+			.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 200.0))
+			.order(egui::Order::Middle)
+			.show(ui, |ui| {
+				ui.horizontal(|ui| {
+					ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+					ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
+					ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
+					let page_left = ui.add(
+						Button::new(RichText::new(icons::CARET_LEFT).color(self.config.theme.accent()).size(16.))
+							.fill(Color32::from_hex("#11111bcc").unwrap())
+							.min_size(Vec2::splat(30.))
+							.corner_radius(15.),
+					);
+
+					if ui.rect_contains_pointer(page_left.rect) {
+						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+					}
+
+					if page_left.clicked() && self.page > 0 {
+						self.page -= 1;
+					}
+
+					ui.add_space(100.);
+
+					ui.label(
+						RichText::new(format!("{} / {}", self.page + 1, self.config.soundboard.pages.len()))
+							.color(self.config.theme.accent())
+							.size(16.),
+					);
+
+					ui.add_space(100.);
+
+					button()
+						.text(icons::CARET_RIGHT)
+						.text_color(self.config.theme.accent())
+						.font_size(16.)
+						.size([30., 30.])
+						.corner_radius(15.)
+						.fill(self.config.theme.sound_background())
+						.add_to(ui)
+						.on_click(|| {
+							if self.page < self.config.soundboard.pages.len() - 1 {
+								self.page += 1;
+							}
+						});
+				});
+			});
+	}
+
+	fn draw_soundboard(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
+		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
+			self.draw_page_menu(ui);
+			self.draw_menu(ui);
+			self.draw_config_buttons(ui);
+			self.draw_debug_info(ui);
+		});
+	}
+
 	fn draw_menu(&mut self, ui: &mut Ui) {
 		let num_items = self.config.soundboard.pages[self.page].sounds.len();
 		if num_items == 0 {
@@ -671,19 +780,25 @@ impl App {
 		}
 
 		let screen_center = ui.ctx().viewport_rect().center();
-		let max_radius = 9999999999.;
+
+		let max_level = self.active_path.len();
+
+		let (_, actual_max_radius) = App::get_ring_radii(max_level);
+
+		let padding = 25.0;
+		let bounding_size = (actual_max_radius + padding) * 2.0;
 
 		let mut sound_to_play: Option<Sound> = None;
 		let mut should_hide = false;
 
-		egui::Area::new("radial_menu_layer".into()).show(ui.ctx(), |ui| {
-			let area_rect = Rect::from_center_size(screen_center, Vec2::splat(max_radius * 2.2));
+		egui::Area::new("radial_menu_layer".into()).order(Order::Foreground).show(ui.ctx(), |ui| {
+			let area_rect = Rect::from_center_size(screen_center, Vec2::splat(bounding_size));
 			let response = ui.allocate_rect(area_rect, egui::Sense::click_and_drag());
 			let painter = ui.painter_at(area_rect);
 
 			let mut rings = Vec::new();
 			let root_nodes = &self.config.soundboard.pages[self.page].sounds;
-			rings.push((0, root_nodes, 0.0, TAU / root_nodes.len().max(1) as f32, Vec::new()));
+			rings.push((0, root_nodes, 0.0, std::f32::consts::TAU / root_nodes.len().max(1) as f32, Vec::new()));
 
 			let mut current_nodes = root_nodes;
 			let mut current_parent_angle = 0.0;
@@ -1391,6 +1506,21 @@ impl App {
 
 							App::draw_volume_slider(ui, "Volume for others:", &mut sound.volume_for_others, 0..=100, self.config.theme);
 
+							ui.add_space(4.);
+
+							button()
+								.size([90., 28.])
+								.fill(self.config.theme.background_dim())
+								.hover_fill(self.config.theme.background_bright())
+								.text_color(self.config.theme.text())
+								.text_align(Align2::LEFT_CENTER)
+								.text(format!("  {}   Play", icons::PLAY))
+								.stroke(Stroke::new(1., self.config.theme.background_bright()))
+								.add_to(ui)
+								.on_click(|| {
+									let _ = self.audio_player.lock().unwrap().play_user_sound(sound);
+								});
+
 							ui.add_space(ui.available_height() - 24.);
 
 							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1695,6 +1825,9 @@ impl App {
 								.stroke(Stroke::new(1., self.config.theme.background_bright()))
 								.add_to(ui)
 								.on_click(|| {
+									if keybinding.global {
+										let _ = keybinding.key.to_global().map(|key| self.hotkey_manager.unregister(key)).transpose();
+									}
 									self.recording_keybinding = Some(keybinding.id);
 									self.is_recording.store(true, Ordering::Relaxed);
 								});
@@ -2167,7 +2300,7 @@ impl App {
 
 				ui.label(
 					RichText::new(
-						"This is a virtual device that comes installed with Zackophany that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set this as the input device in your chat app (discord, teams, etc.) for others to be able to hear your sound effects.",
+						"This is a virtual device that allows others to hear your soundboard. It should be called something like \"CABLE Input\". Set this as the input device in your chat app (discord, teams, etc.) for others to be able to hear your sound effects.",
 					)
 					.color(self.config.theme.text_dim()),
 				);
@@ -2256,75 +2389,6 @@ impl App {
 						});
 					});
 			}
-		});
-	}
-
-	fn draw_page_menu(&mut self, ui: &mut Ui) {
-		Area::new("page_name".into()).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -200.0)).show(ui, |ui| {
-			ui.horizontal(|ui| {
-				let mut page_name = self.config.soundboard.pages[self.page].name.clone();
-				if page_name.is_empty() {
-					page_name = format!("Page {}", self.page + 1);
-				}
-				ui.label(RichText::new(page_name).color(self.config.theme.accent()));
-			});
-		});
-
-		Area::new("page_selector".into())
-			.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 200.0))
-			.show(ui, |ui| {
-				ui.horizontal(|ui| {
-					ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-					ui.visuals_mut().widgets.hovered = ui.visuals().widgets.inactive;
-					ui.visuals_mut().widgets.active = ui.visuals().widgets.inactive;
-					let page_left = ui.add(
-						Button::new(RichText::new(icons::CARET_LEFT).color(self.config.theme.accent()).size(16.))
-							.fill(Color32::from_hex("#11111bcc").unwrap())
-							.min_size(Vec2::splat(30.))
-							.corner_radius(15.),
-					);
-
-					if ui.rect_contains_pointer(page_left.rect) {
-						ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-					}
-
-					if page_left.clicked() && self.page > 0 {
-						self.page -= 1;
-					}
-
-					ui.add_space(100.);
-
-					ui.label(
-						RichText::new(format!("{} / {}", self.page + 1, self.config.soundboard.pages.len()))
-							.color(self.config.theme.accent())
-							.size(16.),
-					);
-
-					ui.add_space(100.);
-
-					button()
-						.text(icons::CARET_RIGHT)
-						.text_color(self.config.theme.accent())
-						.font_size(16.)
-						.size([30., 30.])
-						.corner_radius(15.)
-						.fill(self.config.theme.sound_background())
-						.add_to(ui)
-						.on_click(|| {
-							if self.page < self.config.soundboard.pages.len() - 1 {
-								self.page += 1;
-							}
-						});
-				});
-			});
-	}
-
-	fn draw_soundboard(&mut self, ui: &mut Ui, overlay_frame: eframe::egui::Frame) {
-		egui::CentralPanel::default().frame(overlay_frame).show(ui, |ui| {
-			self.draw_page_menu(ui);
-			self.draw_menu(ui);
-			self.draw_config_buttons(ui);
-			self.draw_debug_info(ui);
 		});
 	}
 
@@ -2594,26 +2658,35 @@ fn random_cute_message(rng: &mut ThreadRng) -> &'static str {
 		"hello zackaroni n cheese ^_^",
 		"meow.......",
 		"TIGHT TIGHT TIGHT BLUE YELLOW PINK",
-		"bye squidward! byye squidward.......",
+		"bye squidward! bbyye squidward.......",
 		"first i draw this head",
 		"all bubble blowing babies will be beaten senseless by every able bodied patron in the bar",
 		"but dont think we dont know how to WEEEEEEED em out!!",
-		"its strange what desire will make foolish people do",
 		"do i deserve this euphoric feeling?",
 		"MOO!!!!!!!!!",
 		"a stove.. is a stove..... no matter where you GOOOUUOOUOO",
-		"i think there are some things that are understood only immediately or never",
-		"\"when im really happy, i cant help but think about dying\"",
-		"feeling like a passenger when all im meant to do is drive",
 		"FUCKING LOSER !!!!!!!!!!!!",
 		"im a chud im a chud im a fat little chud",
 		"playing val all dayyy till the sun comes uppp!!!",
-		"smoke more smoke more smoke more",
+		"SMOKE MORE SMOKE MORE SMOKE MORE!!!!!!!",
 		"kills u",
 		"BUY THAT OP N BLOW HIS SHIT SMOOVE OFF!!!!",
 		"i luv u <3 :D",
-		"dont do that DONT DOO THATTTT WE WERE HAVING A GOOD DAYYY",
 		"i care about u so much sob",
+		"erm... *turns into a derptato n rolls away*",
+		"ITS RAINING TACOSSS!!!!!",
+		"to arf or to ruff...... that is the question..........",
+		"i promise, okay?",
+		"i luv u furevzies",
+		"FAGGOT FAGGOT LOSER FAGGOT",
+		"vampire yaoi vampire yaoi",
+		"shutup fucking moid",
+		"fatass FUCKING FATASS",
+		"SUPER weenie hut junior?!?!?",
+		"you deserve to be prioritized",
+		"mkay?",
+		"woof!! WOOF!!!!!!!",
+		"lowkirkenuinely?? ur kinda awesome.",
 	]
 	.choose(rng)
 	.unwrap()

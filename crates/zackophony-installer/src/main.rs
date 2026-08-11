@@ -6,6 +6,8 @@ use std::{
 use mslnk::ShellLink;
 use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
+static EMBEDDED_APP: &[u8] = include_bytes!("../../../target/release/zackophony.exe");
+
 fn main() -> anyhow::Result<()> {
 	// install_vbcable()?;
 	install_zackophony()?;
@@ -18,10 +20,7 @@ fn main() -> anyhow::Result<()> {
 fn install_zackophony() -> anyhow::Result<()> {
 	let install_location = PathBuf::from(env::var("ProgramFiles")?).join("Zackophony");
 	std::fs::create_dir_all(&install_location)?;
-	std::fs::rename(
-		std::env::current_exe()?.parent().unwrap().join("App").join("Zackophony.exe"),
-		install_location.join("Zackophony.exe"),
-	)?;
+	std::fs::write(install_location.join("Zackophony.exe"), EMBEDDED_APP)?;
 
 	Ok(())
 }
